@@ -84,6 +84,7 @@ const create=React.createElement.bind(React),unpatches=[],instances=new Set(),in
 const mediaContext=React.createContext(false);
 const videoDiagnostics=new Map();
 const videoTrace={calls:0,wrapped:0,touches:0,last:"Open a full-screen video first"};
+let nativeGestureAPI=null;
 let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null,menuGuard=false,pressabilityGuard=false;
 const notify=message=>{try{vendetta.ui.toasts.showToast(message);}catch(error){vendetta.logger?.warn?.('Media Gestures toast unavailable: '+String(error));}};
 function startupError(error) {
@@ -97,6 +98,14 @@ function native(name) {
   for(const lookup of [()=>globalThis.__turboModuleProxy?.(name),()=>globalThis.nativeModuleProxy?.[name],()=>RN.NativeModules?.[name]]) {
     try {const module=lookup();if(module)return module;}catch(_){}
   }
+  return null;
+}
+function findNativeGestureAPI() {
+  try {
+    const builder=vendetta.metro.findByProps('Gesture')?.Gesture;
+    const detector=vendetta.metro.findByProps('GestureDetector')?.GestureDetector;
+    if(typeof builder?.Manual==='function' && detector)return {builder,detector};
+  }catch(_){}
   return null;
 }
 function fileManager() {
@@ -232,6 +241,7 @@ function guardLongPress(element) {
 function MediaBox({element,media,layoutStyle}) {
   const nested=React.useContext(mediaContext);
   const ref=React.useRef(null),rect=React.useRef(null),gesture=React.useRef(null),eventVersion=React.useRef(0),alive=React.useRef(true),[visible,setVisible]=React.useState(false),[revision,setRevision]=React.useState(0),[feedback,setFeedback]=React.useState(null);
+  const nativeGesture=React.useRef(null),nativeBegun=React.useRef(false);
   const session=React.useRef({blocked:false,owned:false,targets:new Set(),rect:null,releaseTimer:null});
   const resetSession=()=>{clearTimeout(session.current.releaseTimer);session.current.blocked=false;session.current.owned=false;session.current.targets.clear();touchSessions.delete(session.current);};
   const measured=()=>ref.current?.measureInWindow((x,y,width,height)=>{rect.current={x,y,width,height};session.current.rect=rect.current;});
@@ -254,7 +264,7 @@ function MediaBox({element,media,layoutStyle}) {
     return ()=>gesture.current?.cancel();
   },[media.key,media.url]);
   const cancel=()=>{resetSession();eventVersion.current++;gesture.current?.cancel();};
-  const feed=event=>{
+  const feed=(event,onMeasured)=>{
     if(!enabled)return;
     if(media.video){videoTrace.touches++;videoTrace.last="Video received "+(event.nativeEvent?.touches?.length || 0)+" touches";}
     const touches=Array.from(event.nativeEvent?.touches || [],t=>({identifier:t.identifier,pageX:t.pageX,pageY:t.pageY,target:t.target}));
@@ -274,7 +284,7 @@ function MediaBox({element,media,layoutStyle}) {
     // Scrolling does not fire onLayout. Remeasure for every touch update; never reuse an old screen rectangle.
     ref.current?.measureInWindow((x,y,width,height)=>{
       if(!alive.current || !enabled || version!==eventVersion.current)return;
-      rect.current={x,y,width,height};session.current.rect=rect.current;gesture.current?.feed(touches);
+      rect.current={x,y,width,height};session.current.rect=rect.current;gesture.current?.feed(touches);onMeasured?.(touches,rect.current);
     });
   };
   const capture=event=>{
@@ -287,19 +297,47 @@ function MediaBox({element,media,layoutStyle}) {
     } else if(touches.some(t=>t.target!==touches[0].target))return false;
     feed(event);return true;
   };
+  if(media.video && !nested && nativeGestureAPI && !nativeGesture.current) {
+    try {
+      const touchList=(event,up=false)=>{
+        const ended=up?new Set((event.changedTouches || []).map(t=>t.id)):null;
+        return (event.allTouches || []).filter(t=>!ended?.has(t.id)).map(t=>({identifier:t.id,pageX:t.absoluteX,pageY:t.absoluteY,target:null}));
+      };
+      const nativeFeed=(event,manager,up=false)=>{
+        if(!enabled)return;
+        const touches=touchList(event,up);
+        if(!nativeBegun.current && touches.length){manager.begin();nativeBegun.current=true;}
+        feed({nativeEvent:{touches}},(points,bounds)=>{
+          if(points.length===2 && points.every(point=>inside(point,bounds)) && gesture.current?.claimed())manager.activate();
+          else if(points.length>2 || (points.length>=2 && !gesture.current?.claimed()))manager.fail();
+        });
+        if(!touches.length){manager.end();nativeBegun.current=false;}
+      };
+      nativeGesture.current=nativeGestureAPI.builder.Manual().runOnJS(true)
+        .onTouchesDown((event,manager)=>nativeFeed(event,manager))
+        .onTouchesMove((event,manager)=>nativeFeed(event,manager))
+        .onTouchesUp((event,manager)=>nativeFeed(event,manager,true))
+        .onTouchesCancelled(()=>{nativeBegun.current=false;cancel();})
+        .onFinalize(()=>{nativeBegun.current=false;cancel();});
+      videoTrace.last='Native video gesture listener attached; waiting for touches';
+    }catch(error){videoTrace.last='Native gesture setup failed: '+String(error?.message || error);nativeGesture.current=null;}
+  }
+  const nativeInput=!!nativeGesture.current;
+  const rnFeed=nativeInput?()=>{}:feed;
   const {outer,inner}=splitStyle(layoutStyle ?? element.props.style);
   const clone=React.cloneElement(element,{style:inner});
   // There is no hitSlop or message-sized gesture surface: only this media's physical box.
   if(!enabled || nested)return element;
-  return create(mediaContext.Provider,{value:true},create(RN.View,{
+  const view=create(RN.View,{
     ref,collapsable:false,style:outer,onLayout:measured,
-    onTouchStart:feed,onTouchMove:feed,onTouchEnd:feed,onTouchCancel:cancel,
-    onStartShouldSetResponderCapture:capture,onMoveShouldSetResponderCapture:capture,
-    onResponderGrant:event=>{feed(event);return true;},onResponderStart:feed,onResponderEnd:feed,onResponderMove:feed,
-    onResponderRelease:feed,onResponderTerminate:cancel,
+    onTouchStart:rnFeed,onTouchMove:rnFeed,onTouchEnd:rnFeed,onTouchCancel:nativeInput?()=>{}:cancel,
+    onStartShouldSetResponderCapture:nativeInput?()=>false:capture,onMoveShouldSetResponderCapture:nativeInput?()=>false:capture,
+    onResponderGrant:event=>{rnFeed(event);return !nativeInput;},onResponderStart:rnFeed,onResponderEnd:rnFeed,onResponderMove:rnFeed,
+    onResponderRelease:rnFeed,onResponderTerminate:nativeInput?()=>{}:cancel,
     onResponderTerminationRequest:()=>!(gesture.current?.claimed()),
   },clone,(visible || feedback)?create(RN.View,{pointerEvents:'none',style:{position:'absolute',top:0,left:0,right:0,zIndex:999,elevation:8,padding:7,backgroundColor:'rgba(15,17,22,0.94)',borderRadius:6}},
-    create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},visible?media.url+(feedback?"\n"+feedback:""):(feedback || media.url))):null));
+    create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},visible?media.url+(feedback?"\n"+feedback:""):(feedback || media.url))):null);
+  return create(mediaContext.Provider,{value:true},nativeInput?create(nativeGestureAPI.detector,{gesture:nativeGesture.current},view):view);
 }
 function wrap(element,source,layoutStyle=element?.props?.style) {
   if(!enabled || !React.isValidElement(element))return element;
@@ -433,6 +471,7 @@ function patchFunction(component) {
 function onLoad() {
   if(enabled)return;enabled=true;
   try {
+  nativeGestureAPI=findNativeGestureAPI();
   patchMenuGuards();
   if(!patchFactories())throw Error('React element factories are unavailable');
   if(!patchForward(RN.Image) && !patchFunction(RN.Image))throw Error('No supported Image render hook. Image type: '+typeof RN.Image+'; fields: '+Object.keys(RN.Image || {}).join(', '));
@@ -443,14 +482,14 @@ function onLoad() {
   } catch(error) {onUnload();startupError(error);throw error;}
 }
 function onUnload() {
-  enabled=false;videoTrace.calls=0;videoTrace.wrapped=0;videoTrace.touches=0;videoTrace.last="Open a full-screen video first";videoDiagnostics.clear();menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
+  enabled=false;nativeGestureAPI=null;videoTrace.calls=0;videoTrace.wrapped=0;videoTrace.touches=0;videoTrace.last="Open a full-screen video first";videoDiagnostics.clear();menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
   for(const item of instances)item.clear();
 }
 function settings() {
   return create(RN.ScrollView,{contentContainerStyle:{padding:20}},
     create(RN.Text,{style:{color:'#fff',fontSize:20,fontWeight:'600',marginBottom:16}},'Media Gestures'),
     create(RN.Text,{style:{color:'#b8bbc4',fontSize:14,lineHeight:22}},
-      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.status || (details.wrapped?'wrapped':'missing layout'))+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nFull-screen callback calls: '+videoTrace.calls+'\nFull-screen children wrapped: '+videoTrace.wrapped+'\nVideo touch events: '+videoTrace.touches+'\nVideo detail: '+videoTrace.last+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
+      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.status || (details.wrapped?'wrapped':'missing layout'))+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nFull-screen callback calls: '+videoTrace.calls+'\nFull-screen children wrapped: '+videoTrace.wrapped+'\nNative video gesture API: '+(nativeGestureAPI?'available':'not detected')+'\nVideo touch events: '+videoTrace.touches+'\nVideo detail: '+videoTrace.last+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
 }
 return {onLoad,onUnload,settings};
 

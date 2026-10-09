@@ -1,5 +1,5 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,functionImage=false,nativeDownload=false,nativeResult=true,nativeFailure=false,nativeVoid=false,videoShape=null}={}) {
+function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,functionImage=false,nativeDownload=false,nativeResult=true,nativeFailure=false,nativeVoid=false,videoShape=null,nativeGestures=false}={}) {
  let active=null,seq=0,clock=0;const timers=new Map(),patches=[],toasts=[],requests=[],files=[],saves=[],removes=[],alerts=[],nativeCalls=[];
  let nestedContext=false;
  const React={createContext:value=>({Provider:"MediaProvider",value}),useContext:()=>nestedContext,createElement:(type,props,...children)=>({type,key:props?.key,props:{...props,children}}),cloneElement:(el,props)=>({...el,props:{...el.props,...props}}),isValidElement:el=>!!el?.props,
@@ -15,7 +15,12 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
  const video=videoShape==='class'?Video:videoShape==='memo'?{type:function VideoComponent(){}}:videoShape==='forward'?{render:props=>React.createElement('NativeVideo',props)}:videoShape==='function'?function VideoComponent(){}:null;
  const sheets={opened:[],openLazy(...args){this.opened.push(args);return 'opened';},hideActionSheet(){}};
  class Pressability {_handleLongPress(event){this.calls=(this.calls || 0)+1;this.event=event;return 'long press';}}
- const vendetta={plugin:{storage:{}},logger:{warn(){}},metro:{common:{React,ReactNative:RN},findByName:(name,defaultExp=true)=>name==='Pressability'?Pressability:name==='Video'?(defaultExp?video:{default:video}):null,findByProps:(...props)=>props.includes('hideActionSheet')?sheets:null,findByPropsAll:()=>[jsxRuntime]},ui:{toasts:{showToast:m=>{if(brokenToast)throw Error("toast unavailable");toasts.push(m);}}},patcher:{instead(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original.bind(this));};return()=>obj[name]=original;},after(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original(...args));};patches.push([obj,name,original]);return()=>obj[name]=original;}}};
+ class ManualGesture {
+  constructor(){this.handlers={};}runOnJS(value){this.js=value;return this;}
+  onTouchesDown(fn){this.handlers.down=fn;return this;}onTouchesMove(fn){this.handlers.move=fn;return this;}onTouchesUp(fn){this.handlers.up=fn;return this;}onTouchesCancelled(fn){this.handlers.cancel=fn;return this;}onFinalize(fn){this.handlers.finalize=fn;return this;}
+ }
+ const gestureBuilder={Manual:()=>new ManualGesture()},gestureDetector=function GestureDetector(){};
+ const vendetta={plugin:{storage:{}},logger:{warn(){}},metro:{common:{React,ReactNative:RN},findByName:(name,defaultExp=true)=>name==='Pressability'?Pressability:name==='Video'?(defaultExp?video:{default:video}):null,findByProps:(...props)=>props.includes('hideActionSheet')?sheets:nativeGestures && props[0]==='Gesture'?{Gesture:gestureBuilder}:nativeGestures && props[0]==='GestureDetector'?{GestureDetector:gestureDetector}:null,findByPropsAll:()=>[jsxRuntime]},ui:{toasts:{showToast:m=>{if(brokenToast)throw Error("toast unavailable");toasts.push(m);}}},patcher:{instead(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original.bind(this));};return()=>obj[name]=original;},after(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original(...args));};patches.push([obj,name,original]);return()=>obj[name]=original;}}};
  const context={vendetta,console,Uint8Array,AbortController,fetch:async url=>{requests.push(url);return{ok:true,status:200,headers:{get:n=>n==='content-type'?'image/png':null},arrayBuffer:async()=>Uint8Array.from([0,1,2,3]).buffer};},
   setTimeout:(fn,delay)=>{const id=++seq;timers.set(id,{fn,due:clock+delay});return id;},clearTimeout:id=>timers.delete(id)};
  const plugin=vm.runInNewContext('(vendetta=>'+fs.readFileSync(require.resolve('../docs/media-gestures/index.js'),'utf8')+')(vendetta)',context);
@@ -30,12 +35,12 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
  async function tick(ms){clock+=ms;for(let i=0;i<15;i++){for(const[id,t]of [...timers])if(t.due<=clock){timers.delete(id);t.fn();}await Promise.resolve();}}
  function mountWrapped(element,x=0){
   const owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;
-  const rendered=element.type(element.props),view=rendered.props.children[0];
+  const rendered=element.type(element.props),child=rendered.props.children[0],view=child.type===gestureDetector?child.props.children[0]:child;
   owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};
   for(const effect of owner.effects){const cleanup=effect();if(cleanup)owner.cleanups.push(cleanup);}
-  return {view,owner,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};
+  return {view,owner,nativeGesture:child.type===gestureDetector?child.props.gesture:null,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};
  }
- return {plugin,RN,video,mountWrapped,renderNested(element){nestedContext=true;active={refs:[],values:[],effects:[]};try{return element.type(element.props);}finally{nestedContext=false;}},mountVideo(props,x=0,type=video){const element=React.createElement(type,props),owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=element.type(element.props),view=rendered.props.children[0];owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};for(const effect of owner.effects)effect();return {view,owner,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};},sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
+ return {plugin,RN,video,mountWrapped,renderNested(element){nestedContext=true;active={refs:[],values:[],effects:[]};try{return element.type(element.props);}finally{nestedContext=false;}},mountVideo(props,x=0,type=video){const element=React.createElement(type,props),owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=element.type(element.props),child=rendered.props.children[0],view=child.type===gestureDetector?child.props.children[0]:child;owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};for(const effect of owner.effects)effect();return {view,owner,nativeGesture:child.type===gestureDetector?child.props.gesture:null,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};},sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
 }
 test('packaged plugin downloads the touched batch item once and cleans up its temporary media',async()=>{
  const f=fixture();f.plugin.onLoad();const a=f.mount(101),b=f.mount(102,200);
@@ -288,4 +293,34 @@ test('presenter callback layout and video URL override empty style and poster me
  assert.equal(media.props.element.props.source,poster);assert.deepEqual(media.props.element.props.style,{});
  const tile=f.mountWrapped(media);tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
  assert.equal(f.nativeCalls.length,1);assert.equal(f.nativeCalls[0].url,media.props.media.url);f.plugin.onUnload();
+});
+
+test('native video gestures work with zero ordinary React touch events and preserve single-finger input',async()=>{
+ const f=fixture({nativeGestures:true,nativeDownload:true}),cached=f.jsxRuntime.jsx;f.plugin.onLoad();function MediaViewerItemPresenter(){}
+ const source={videoURI:'https://cdn.discordapp.com/attachments/100/702/movie.mp4'};
+ const presenter=f.React.createElement(MediaViewerItemPresenter,{source,renderMedia:props=>cached('Player',{source:props.source})});
+ const media=presenter.props.renderMedia({source,style:{width:'100%',height:'100%'}}),tile=f.mountWrapped(media);
+ assert.ok(tile.nativeGesture);assert.equal(tile.nativeGesture.js,true);
+ let begins=0,activations=0,ends=0;const manager={begin(){begins++;},activate(){activations++;},end(){ends++;},fail(){}};
+ const point=id=>({id,absoluteX:10*id,absoluteY:10});
+ tile.nativeGesture.handlers.down({allTouches:[point(1)],changedTouches:[point(1)]},manager);await f.tick(450);
+ assert.equal(activations,0);assert.equal(tile.owner.values[0],false);assert.equal(f.nativeCalls.length,0);
+ tile.nativeGesture.handlers.down({allTouches:[point(1),point(2)],changedTouches:[point(2)]},manager);
+ await f.tick(450);assert.equal(tile.owner.values[0],true);assert.ok(activations>0);
+ await f.tick(1050);assert.equal(f.nativeCalls.length,1);assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/702/movie.mp4');
+ tile.nativeGesture.handlers.up({allTouches:[point(1),point(2)],changedTouches:[point(2)]},manager);
+ tile.nativeGesture.handlers.up({allTouches:[point(1)],changedTouches:[point(1)]},manager);
+ assert.equal(ends,1);assert.equal(begins,1);f.plugin.onUnload();assert.equal(f.timers.size,0);
+});
+test('native video input rejects cross-tile touches and cancels when a finger lifts early',async()=>{
+ const f=fixture({nativeGestures:true,nativeDownload:true});f.plugin.onLoad();
+ const media=f.React.createElement('VideoPlayer',{source:{uri:'https://cdn.discordapp.com/attachments/100/703/a.mp4'},style:{width:100,height:100}}),tile=f.mountWrapped(media);
+ let failures=0;const manager={begin(){},activate(){},end(){},fail(){failures++;}};
+ tile.nativeGesture.handlers.down({allTouches:[{id:1,absoluteX:10,absoluteY:10},{id:2,absoluteX:110,absoluteY:10}]},manager);
+ await f.tick(1500);assert.equal(f.nativeCalls.length,0);assert.equal(failures,1);
+ tile.nativeGesture.handlers.cancel();
+ const allTouches=[{id:1,absoluteX:10,absoluteY:10},{id:2,absoluteX:20,absoluteY:10}];
+ tile.nativeGesture.handlers.down({allTouches},manager);await f.tick(450);
+ tile.nativeGesture.handlers.up({allTouches,changedTouches:[allTouches[1]]},manager);await f.tick(1500);
+ assert.equal(f.nativeCalls.length,0);f.plugin.onUnload();
 });

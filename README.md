@@ -1,6 +1,6 @@
 # Media Gestures for classic Revenge
 
-Version 0.1.10 — device-test build.
+Version 0.1.11 — device-test build.
 Target: Revenge `1b1d297-main` (1.11.6), Discord Android 347.12 (347012).
 The plugin API was checked against the exact Revenge source commit `1b1d297416594087769987908e5fc09af36b7e6e`. The Discord application itself is not available in this workspace, so native component interception, touch delivery, and gallery permission behavior are NOT yet verified on a real phone.
 
@@ -82,3 +82,5 @@ Version 0.1.8 recognizes full-screen video renderers from their own source/video
 Version 0.1.9 hooks MediaViewerItemPresenter.renderMedia, using each callback’s actual tile source and fill style inside Discord’s internally sized animated child. This covers the no-style presenter reported on the target phone, including cached JSX factories, without a window-wide gesture surface.
 
 Version 0.1.10 separates gesture layout/source metadata from the player’s props in the full-screen renderMedia callback. Empty player styles and poster-only player sources no longer override usable callback metadata. Settings distinguish hook attachment, callback calls, wrapped children and delivered touch events.
+
+Version 0.1.11 adds a video-only React Native Gesture Handler Manual gesture/Detector listener. This addresses wrapped video children receiving zero React touch events on the target phone. Native touch coordinates are checked against the measured media box, two fingers activate the hold, and lifting/moving/termination cancels it. Images retain their existing input path. Settings report native video gesture API availability. Native touch handling still requires target-device confirmation.
