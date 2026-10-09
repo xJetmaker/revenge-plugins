@@ -1,6 +1,6 @@
 # Media Gestures for classic Revenge
 
-Version 0.1.0 — first device-test build.
+Version 0.1.1 — first device-test build.
 Target: Revenge `1b1d297-main` (1.11.6), Discord Android 347.12 (347012).
 The plugin API was checked against the exact Revenge source commit `1b1d297416594087769987908e5fc09af36b7e6e`. The Discord application itself is not available in this workspace, so native component interception, touch delivery, and gallery permission behavior are NOT yet verified on a real phone.
 
@@ -62,3 +62,5 @@ The build emits `docs/media-gestures/index.js` (an expression evaluated by class
 For updates, rebuild and upload both generated files. Use Revenge's plugin update action, then reload Discord.
 
 The exact checked loader caches installed JavaScript and catches update-fetch failures before starting the cached code. Removing hosting will still prevent new installs and updates. Test a full app restart with updates disabled before relying on deleting or privatizing the repository.
+
+0.1.1: supports memo-wrapped forward-ref Image components, prevents toast failures from disabling the plugin, and displays startup exceptions in an alert (including evaluation-time failures). If enabling still fails, send the alert text so the exact native component issue can be identified.

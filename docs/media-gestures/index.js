@@ -1,4 +1,4 @@
-(()=>{const core=(()=>{"use strict";
+(()=>{try{const core=(()=>{"use strict";
 // Only the source of ONE rendered media element is used. Never a message's attachments[0].
 function mediaFromSource(source) {
   const sources = Array.isArray(source) ? source : [source];
@@ -80,7 +80,14 @@ const {mediaFromSource,createGesture,base64}=core;
 const {React,RN}= {React:vendetta.metro.common.React,RN:vendetta.metro.common.ReactNative};
 const create=React.createElement.bind(React),unpatches=[],instances=new Set(),inFlight=new Set(),controllers=new Set();
 let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null;
-const notify=message=>vendetta.ui.toasts.showToast(message);
+const notify=message=>{try{vendetta.ui.toasts.showToast(message);}catch(error){vendetta.logger?.warn?.('Media Gestures toast unavailable: '+String(error));}};
+function startupError(error) {
+  const message=String(error?.message || error);
+  try {vendetta.plugin.storage.lastStartupError=message;}catch(_){}
+  try {RN.Alert.alert('Media Gestures could not start',message);}catch(_) {
+    try {vendetta.ui.alerts.showConfirmationAlert({title:'Media Gestures could not start',content:message,confirmText:'OK',onConfirm:()=>{}});}catch(_) {notify(message);}
+  }
+}
 function native(name) {
   try {return RN.NativeModules?.[name] || globalThis.nativeModuleProxy?.[name] || globalThis.__turboModuleProxy?.(name);} catch(_){return null;}
 }
@@ -189,13 +196,20 @@ function wrap(element,source) {
   return create(MediaBox,{element,media,key:element.key});
 }
 function patchForward(component) {
+  const seen=new Set();
+  // Image may be memo(forwardRef(...)); the outer memo has .type, not .render.
+  while(component && typeof component.render!=='function') {
+    if(seen.has(component))return false;seen.add(component);
+    component=component.type || component.default;
+  }
   if(typeof component?.render!=='function')return false;
   unpatches.push(vendetta.patcher.after('render',component,(args,element)=>wrap(element,args[0]?.source)));
   return true;
 }
 function onLoad() {
   if(enabled)return;enabled=true;
-  if(!patchForward(RN.Image)) {enabled=false;throw Error('Unsupported React Native Image implementation; no gesture patch applied.');}
+  try {
+  if(!patchForward(RN.Image))throw Error('No supported Image render hook. Image type: '+typeof RN.Image+'; fields: '+Object.keys(RN.Image || {}).join(', '));
   // React Native Video commonly exports a forwardRef. Never guess an array index or an internal save function.
   try {
     const module=vendetta.metro.findByName('Video',false);
@@ -204,6 +218,8 @@ function onLoad() {
   }catch(_){}
   appStateSubscription=RN.AppState?.addEventListener('change',state=>{if(state!=='active')for(const item of instances)item.clear();});
   notify('Media Gestures: hold 2 fingers for URL, 3 to save. Reload once to attach to existing media.');
+  try {delete vendetta.plugin.storage.lastStartupError;}catch(_){}
+  } catch(error) {onUnload();startupError(error);throw error;}
 }
 function onUnload() {
   enabled=false;appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
@@ -217,4 +233,4 @@ function settings() {
 }
 return {onLoad,onUnload,settings};
 
-})()
+}catch(error){return {onLoad(){const message=String(error?.message || error);try{vendetta.metro.common.ReactNative.Alert.alert('Media Gestures startup error',message);}catch(_){try{vendetta.ui.alerts.showConfirmationAlert({title:'Media Gestures startup error',content:message,confirmText:'OK',onConfirm:()=>{}});}catch(_){}}throw error;},onUnload(){}};}})()
