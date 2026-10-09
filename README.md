@@ -64,3 +64,5 @@ For updates, rebuild and upload both generated files. Use Revenge's plugin updat
 The exact checked loader caches installed JavaScript and catches update-fetch failures before starting the cached code. Removing hosting will still prevent new installs and updates. Test a full app restart with updates disabled before relying on deleting or privatizing the repository.
 
 0.1.1: supports memo-wrapped forward-ref Image components, prevents toast failures from disabling the plugin, and displays startup exceptions in an alert (including evaluation-time failures). If enabling still fails, send the alert text so the exact native component issue can be identified.
+
+Version 0.1.2 supports function-based React Native Image components through React and JSX element factories, preserving the original Image identity and refs. Refetch the plugin, reload Discord, then enable it to test on your phone.

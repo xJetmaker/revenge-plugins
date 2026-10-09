@@ -206,15 +206,32 @@ function patchForward(component) {
   unpatches.push(vendetta.patcher.after('render',component,(args,element)=>wrap(element,args[0]?.source)));
   return true;
 }
+// Function components have no mutable render method. Intercept their elements,
+// preserving the original component, refs and React's hook execution.
+function patchFunction(component) {
+  if(typeof component!=='function')return false;
+  const holders=new Set([React]);
+  try {for(const runtime of vendetta.metro.findByPropsAll?.('jsx','jsxs') || [])holders.add(runtime);}catch(_){}
+  let count=0;
+  for(const holder of holders)for(const name of ['createElement','jsx','jsxs','jsxDEV']) {
+    if(typeof holder?.[name]!=='function')continue;
+    try {
+      unpatches.push(vendetta.patcher.after(name,holder,(args,element)=>
+        element?.type===component?wrap(element,element.props?.source):element));
+      count++;
+    }catch(_){}
+  }
+  return count>0;
+}
 function onLoad() {
   if(enabled)return;enabled=true;
   try {
-  if(!patchForward(RN.Image))throw Error('No supported Image render hook. Image type: '+typeof RN.Image+'; fields: '+Object.keys(RN.Image || {}).join(', '));
+  if(!patchForward(RN.Image) && !patchFunction(RN.Image))throw Error('No supported Image render hook. Image type: '+typeof RN.Image+'; fields: '+Object.keys(RN.Image || {}).join(', '));
   // React Native Video commonly exports a forwardRef. Never guess an array index or an internal save function.
   try {
     const module=vendetta.metro.findByName('Video',false);
     const video=module?.default || module?.Video;
-    if(video && video!==RN.Image)videoPatched=patchForward(video);
+    if(video && video!==RN.Image)videoPatched=patchForward(video) || patchFunction(video);
   }catch(_){}
   appStateSubscription=RN.AppState?.addEventListener('change',state=>{if(state!=='active')for(const item of instances)item.clear();});
   notify('Media Gestures: hold 2 fingers for URL, 3 to save. Reload once to attach to existing media.');

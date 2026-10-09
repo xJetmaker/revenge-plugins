@@ -1,6 +1,6 @@
 {
   "name": "Media Gestures",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Hold two fingers on one attachment to see its URL; hold three to save it. No copy action.",
   "authors": [
     {
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "f8a06c69d814afb7cca878dda71a8f3f736e6aa4616c10517494b3679a5b9d0a",
+  "hash": "43eb57c29c33698cc6f6647a6a8234a9b39b1fc39233d287733626eb21384d49",
   "vendetta": {
     "icon": "ImageIcon"
   }
