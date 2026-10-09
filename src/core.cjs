@@ -30,39 +30,40 @@ function inside(point, rect) {
     point.pageY >= rect.y && point.pageY < rect.y + rect.height;
 }
 function createGesture({getRect,show,hide,download,setTimer=setTimeout,clearTimer=clearTimeout,onState=()=>{}}) {
-  let timer=null, count=0, starts=new Map(), canceled=false, downloaded=false, active=false, generation=0;
-  function clear() { generation++; if(timer!==null)clearTimer(timer);timer=null; }
-  function abort(reason,touchCount=count) { clear(); hide(); active=false; canceled=true;onState({count:touchCount,canceled:true,reason}); }
-  function reset() { clear(); hide();count=0;starts.clear();canceled=false;downloaded=false;active=false;onState({count:0}); }
+  const timers=new Set();
+  let count=0,starts=new Map(),canceled=false,downloaded=false,active=false,generation=0;
+  function clear() {generation++;for(const timer of timers)clearTimer(timer);timers.clear();}
+  function abort(reason,touchCount=count) {clear();hide();active=false;canceled=true;onState({count:touchCount,canceled:true,reason});}
+  function reset() {clear();hide();count=0;starts.clear();canceled=false;downloaded=false;active=false;onState({count:0});}
+  function schedule(delay,token,callback) {
+    const timer=setTimer(()=>{
+      timers.delete(timer);
+      if(token===generation && !canceled && count===2)callback();
+    },delay);timers.add(timer);
+  }
   function feed(touches) {
-    const list=Array.from(touches || []), next=list.length;
-    if(next===0) { reset();return; }
+    const list=Array.from(touches || []),next=list.length;
+    if(!next){reset();return;}
     if(canceled)return;
+    if(next>2){abort('Use exactly two fingers',next);return;}
     const rect=getRect();
-    if(next>3) {abort('Use exactly three fingers to download',next);return;}
-    if(list.some(t=>!inside(t,rect))) {abort('Keep every finger inside the same media tile',next);return;}
+    if(list.some(t=>!inside(t,rect))){abort('Keep both fingers inside the same media tile',next);return;}
     const ids=new Set(list.map(t=>t.identifier));
-    if(ids.size!==next) { abort('Touch identifiers are unavailable',next);return; }
-    for(const t of list) {
+    if(ids.size!==next){abort('Touch identifiers are unavailable',next);return;}
+    for(const t of list){
       const start=starts.get(t.identifier);
-      if(start && Math.hypot(t.pageX-start.x,t.pageY-start.y)>12) { abort('Hold still to download');return; }
+      if(start && Math.hypot(t.pageX-start.x,t.pageY-start.y)>12){abort('Hold still to download');return;}
     }
-    // A lifted/replaced finger ends the gesture. Do not turn a three-finger release into a URL gesture.
-    if(next<count || [...starts.keys()].some(id=>!ids.has(id))) { abort('Keep all three fingers down until the download starts');return; }
+    if(next<count || [...starts.keys()].some(id=>!ids.has(id))){abort('Keep both fingers down until the download starts');return;}
     for(const t of list)if(!starts.has(t.identifier))starts.set(t.identifier,{x:t.pageX,y:t.pageY});
     if(next===count)return;
     clear();hide();active=false;count=next;onState({count});
-    if(next<2 || downloaded)return;
-    const expected=next, token=generation;
-    timer=setTimer(()=>{
-      timer=null;
-      if(token!==generation || canceled || count!==expected)return;
-      active=true;
-      if(expected===2)show();
-      else {downloaded=true;download();}
-    },next===2?450:700);
+    if(next!==2 || downloaded)return;
+    const token=generation;
+    schedule(450,token,()=>{active=true;show();onState({count,phase:'url'});});
+    schedule(1500,token,()=>{downloaded=true;active=true;hide();onState({count,phase:'download'});download();});
   }
-  return {feed,cancel:reset,claimed:()=>count>=2 && !canceled,active:()=>active};
+  return {feed,cancel:reset,claimed:()=>count===2 && !canceled,active:()=>active};
 }
 function base64(bytes) {
   const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';

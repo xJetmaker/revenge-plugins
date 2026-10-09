@@ -1,15 +1,15 @@
 # Media Gestures for classic Revenge
 
-Version 0.1.1 — first device-test build.
+Version 0.1.6 — device-test build.
 Target: Revenge `1b1d297-main` (1.11.6), Discord Android 347.12 (347012).
 The plugin API was checked against the exact Revenge source commit `1b1d297416594087769987908e5fc09af36b7e6e`. The Discord application itself is not available in this workspace, so native component interception, touch delivery, and gallery permission behavior are NOT yet verified on a real phone.
 
 ## Behavior
 
 - Hold **two fingers** on one attachment for **450 ms**: a temporary, noninteractive URL tooltip appears on that media. Lift a finger to hide it. There is no copy button or clipboard access.
-- Hold **three fingers** on one attachment for **700 ms**: download that attachment once to the gallery, in the Revenge album when supported.
-- Add a third finger during a two-finger hold to switch to the download gesture. Returning to two fingers after a download does not trigger another action.
-- All fingers must be inside the same physical media tile. Fingers on neighbouring tiles, more than three fingers, replacing a finger, scrolling, or moving more than 12 logical pixels cancel the gesture. Lift all fingers before trying again.
+- Keep the same **two fingers** held for **1.5 seconds total**: download that attachment once using Discord’s native downloader, or the CameraRoll fallback when available.
+- Lift either finger before 1.5 seconds to only view the URL. A third finger cancels; it no longer starts a download.
+- All fingers must be inside the same physical media tile. Fingers on neighbouring tiles, more than two fingers, replacing a finger, scrolling, or moving more than 12 logical pixels cancel the gesture. Lift all fingers before trying again.
 - Batch messages are handled per rendered image/video, using that element's own source URI. No message-wide hitbox, invisible padding, nearest-tile selection, or first-attachment fallback is used. Screen bounds are remeasured during every touch update because scrolling does not necessarily trigger layout events.
 - Native image taps and one-finger holds are left to Discord. Existing gallery/video pinch gestures use the same fingers and may conflict; verify those on your device.
 
@@ -19,7 +19,7 @@ Direct Discord CDN image attachments (PNG/JPEG/GIF/WebP/AVIF) and video attachme
 
 Image/video sources must use `cdn.discordapp.com/attachments/...` or `media.discordapp.net/attachments/...`. Only thumbnail conversion query parameters are removed; attachment signature/expiry parameters are preserved. Expired links produce an error; the plugin does not guess a replacement URL.
 
-Downloads require Revenge's native file manager plus a working CameraRoll/gallery module. Missing capabilities are reported rather than opening a browser or claiming success. A download fetches the original media, writes a temporary cache file, then saves the local URI to the gallery. The temporary cache file is removed afterward. The first build supports files up to **32 MB** and at most **two concurrent downloads** to limit memory pressure. Android's gallery/storage permission prompt may appear. There is no analytics, account token lookup, or background polling.
+Downloads first use Discord’s `MediaManager.downloadMediaAsset`, saving through Discord to Downloads or the gallery without JavaScript fetch/base64 copies. A returned promise is awaited; false results and rejection report failure. A bridge returning no promise reports an unconfirmed handoff instead of claiming success. If that API is absent, the plugin falls back to a native file manager plus CameraRoll: fetch the original, write a temporary cache file, save its local URI, then remove the cache. Only this fallback has the **32 MB** limit. At most **two simultaneous tracked requests** are allowed; unconfirmed native handoffs are managed by Discord. Android's gallery/storage permission prompt may appear. There is no analytics, account token lookup, or background polling.
 
 ## Publish on GitHub Pages
 
@@ -39,10 +39,10 @@ Installable files are published from this repository. The installation folder UR
 
 Start with an ordinary uploaded image, then a batch of two images with visibly different filenames, then a video thumbnail.
 
-- Open the plugin's settings and check Image hook, File manager, Gallery saving, and Inline video hook.
+- Open the plugin's settings and check Image hook, Discord downloader, menu guards, and Inline video hook. File manager/Gallery saving describe the fallback only.
 - Hold two fingers on the second image. The URL must belong to that second attachment. Release and confirm it disappears.
 - Scroll and repeat, then touch across two neighbouring tiles. The cross-tile gesture must do nothing.
-- Hold three fingers on one small test image. Confirm exactly one file appears in the gallery.
+- Hold two fingers for 1.5 seconds on a small test image. Confirm exactly one file appears in Downloads or the gallery.
 - Try a video thumbnail. Check that it saves the video rather than a frame.
 - Check normal single taps/long presses, disable the plugin, and check them again.
 
@@ -57,7 +57,7 @@ node build.cjs
 node --test tests/*.test.cjs
 ```
 
-The build emits `docs/media-gestures/index.js` (an expression evaluated by classic Revenge's Vendetta-compatible plugin loader) and `manifest.json` with its SHA-256 hash. Tests cover batch identity, signed URLs, gesture upgrades, exact bounds, movement/termination, native gallery call arguments, original media saving, and cleanup.
+The build emits `docs/media-gestures/index.js` (an expression evaluated by classic Revenge's Vendetta-compatible plugin loader) and `manifest.json` with its SHA-256 hash. Tests cover batch identity, signed URLs, two-stage hold timing, exact bounds, movement/termination, native gallery call arguments, original media saving, and cleanup.
 
 For updates, rebuild and upload both generated files. Use Revenge's plugin update action, then reload Discord.
 
@@ -72,3 +72,5 @@ Version 0.1.3 guards Discord onLongPress callbacks during multi-finger media ges
 Version 0.1.4 handles responder start/end events so a third finger can upgrade an already-owned two-finger gesture. The media overlay reports hold, cancellation and download status; download errors also open an alert, and the last result is visible in plugin settings. Native module discovery tries each bridge independently. Gallery saving still requires the supported native camera-roll API on the device.
 
 Version 0.1.5 guards the Discord action-sheet openLazy entry point during a validated multi-finger media hold, including menu opens that provide no touch event. It also guards existing React Native Pressability instances when discoverable. The guards restore on disable; single-finger holds and touches split across media tiles do not activate the action-sheet guard. Plugin settings report which guards were detected.
+
+Version 0.1.6 replaces three-finger downloads with a 1.5-second two-finger hold (URL at 450 ms). It prefers Discord’s MediaManager native downloader; CameraRoll is now a fallback. Calling conventions were checked against [FileContentPreview](https://github.com/fres621/vendetta-plugins/blob/master/plugins/FileContentPreview/src/ui/FCButtons.tsx) and [Stealmoji](https://github.com/aliernfrog/vd-plugins/blob/main/plugins/Stealmoji/ui/components/StealButtons.tsx).

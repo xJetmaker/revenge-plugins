@@ -28,6 +28,17 @@ function gallery() {
   if(typeof api?.save==='function')return (uri,type)=>api.save(uri,{type,album:'Revenge'});
   return null;
 }
+function discordDownloader() {
+  for(const name of ['MediaManager','DCDMediaManager']) {
+    const manager=native(name);
+    if(typeof manager?.downloadMediaAsset==='function')return manager;
+  }
+  try {
+    const manager=vendetta.metro.findByProps('downloadMediaAsset');
+    if(typeof manager?.downloadMediaAsset==='function')return manager;
+  }catch(_){}
+  return null;
+}
 async function download(media,onStatus=()=>{}) {
   const status=(message,problem=false)=>{
     try {vendetta.plugin.storage.lastDownloadStatus=message;}catch(_){}
@@ -37,12 +48,24 @@ async function download(media,onStatus=()=>{}) {
   if(!enabled)return;
   if(inFlight.has(media.key)){onStatus('This attachment is already downloading');return;}
   if(downloads>=2){status('Two downloads are already running. Try again shortly.');return;}
-  const files=fileManager(),save=gallery();
-  if(!files || !save){status(!files?'Native file writing is unavailable on this Discord build.':'Gallery saving is unavailable on this Discord build.',true);return;}
+  const manager=discordDownloader(),files=manager?null:fileManager(),save=manager?null:gallery();
+  if(!manager && (!files || !save)){status(!files?'Native file writing is unavailable on this Discord build.':'Gallery saving is unavailable on this Discord build.',true);return;}
   inFlight.add(media.key);downloads++;
   let cacheName=null,controller=null,timeout=null;
   try {
     status('Downloading media…');
+    if(manager) {
+      // Discord's API takes URL + a GIF flag (1 for GIF, 0 otherwise),
+      // not a guessed image/video enum. Native saving avoids JS/base64 copies.
+      const request=manager.downloadMediaAsset(media.url,media.extension==='gif'?1:0);
+      if(!request || typeof request.then!=='function') {
+        status('Download handed to Discord. Check Downloads or your gallery.');return;
+      }
+      const result=await request;
+      if(result===false || result===null)throw Error('Discord could not save the media (check storage permission)');
+      if(enabled)status(result===true || (typeof result==='string' && result)?'Media saved by Discord':'Discord finished the download request. Check Downloads or your gallery.');
+      return;
+    }
     if(typeof AbortController==='function'){controller=new AbortController();controllers.add(controller);timeout=setTimeout(()=>controller.abort(),45000);}
     const response=await fetch(media.url,controller?{signal:controller.signal}:{});
     if(!response.ok)throw Error('HTTP '+response.status+' (the attachment link may have expired)');
@@ -65,7 +88,7 @@ async function download(media,onStatus=()=>{}) {
   } catch(error) {if(enabled)status('Download failed: '+String(error?.message || error),true);}
   finally {
     clearTimeout(timeout);if(controller)controllers.delete(controller);
-    if(cacheName && typeof files.removeFile==='function')try{await files.removeFile('cache',cacheName);}catch(_){}
+    if(cacheName && typeof files?.removeFile==='function')try{await files.removeFile('cache',cacheName);}catch(_){}
     inFlight.delete(media.key);downloads--;
   }
 }
@@ -141,7 +164,7 @@ function MediaBox({element,media}) {
         if(!state.count)session.current.owned=false;
         else if(state.count>=2 && !state.canceled)session.current.owned=true;
         if(state.canceled)setFeedback(state.count>=2?state.reason:null);
-        else setFeedback(state.count===3?'Hold three fingers still to download…':null);
+        else setFeedback(state.count===2?(state.phase==='download'?'Starting download…':state.phase==='url'?'Keep holding to download; lift to only view the URL':'Hold two fingers still…'):null);
       }});
     return ()=>gesture.current?.cancel();
   },[media.key,media.url]);
@@ -170,7 +193,7 @@ function MediaBox({element,media}) {
   };
   const capture=event=>{
     const touches=event.nativeEvent?.touches || [];
-    if(!enabled || touches.length<2 || touches.length>3)return false;
+    if(!enabled || touches.length!==2)return false;
     if(touches.some(t=>t.target!==touches[0].target))return false;
     feed(event);return true;
   };
@@ -186,7 +209,7 @@ function MediaBox({element,media}) {
     onResponderRelease:feed,onResponderTerminate:cancel,
     onResponderTerminationRequest:()=>!(gesture.current?.claimed()),
   },clone,(visible || feedback)?create(RN.View,{pointerEvents:'none',style:{position:'absolute',top:0,left:0,right:0,zIndex:999,elevation:8,padding:7,backgroundColor:'rgba(15,17,22,0.94)',borderRadius:6}},
-    create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},feedback || media.url)):null);
+    create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},visible?media.url+(feedback?"\n"+feedback:""):(feedback || media.url))):null);
 }
 function wrap(element,source) {
   if(!enabled || !React.isValidElement(element))return element;
@@ -243,7 +266,7 @@ function onLoad() {
     if(video && video!==RN.Image)videoPatched=patchForward(video) || patchFunction(video);
   }catch(_){}
   appStateSubscription=RN.AppState?.addEventListener('change',state=>{if(state!=='active')for(const item of instances)item.clear();});
-  notify('Media Gestures: hold 2 fingers for URL, 3 to save. Reload once to attach to existing media.');
+  notify('Media Gestures: hold two fingers for URL; keep holding 1.5 seconds to download. Reload to attach to existing media.');
   try {delete vendetta.plugin.storage.lastStartupError;}catch(_){}
   } catch(error) {onUnload();startupError(error);throw error;}
 }
@@ -255,6 +278,6 @@ function settings() {
   return create(RN.ScrollView,{contentContainerStyle:{padding:20}},
     create(RN.Text,{style:{color:'#fff',fontSize:20,fontWeight:'600',marginBottom:16}},'Media Gestures'),
     create(RN.Text,{style:{color:'#b8bbc4',fontSize:14,lineHeight:22}},
-      'Two fingers: hold 0.45 seconds to see the URL, then lift to hide.\n\nThree fingers: hold 0.7 seconds to download once. All fingers must touch the same media tile. Moving cancels.\n\nDownload limit: 32 MB; at most two simultaneous downloads. Gallery permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
+      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
 }
 return {onLoad,onUnload,settings};
