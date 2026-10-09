@@ -4,7 +4,7 @@ const {React,RN}= {React:vendetta.metro.common.React,RN:vendetta.metro.common.Re
 const create=React.createElement.bind(React),unpatches=[],instances=new Set(),inFlight=new Set(),controllers=new Set(),touchSessions=new Set(),functionMedia=new Set(),longPressGuards=new WeakMap();
 const mediaContext=React.createContext(false);
 const videoDiagnostics=new Map();
-const videoTrace={calls:0,wrapped:0,touches:0,last:"Open a full-screen video first"};
+const videoTrace={calls:0,wrapped:0,touches:0,maxTouches:0,nativeState:"waiting",last:"Open a full-screen video first"};
 let nativeGestureAPI=null;
 let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null,menuGuard=false,pressabilityGuard=false;
 const notify=message=>{try{vendetta.ui.toasts.showToast(message);}catch(error){vendetta.logger?.warn?.('Media Gestures toast unavailable: '+String(error));}};
@@ -25,7 +25,7 @@ function findNativeGestureAPI() {
   try {
     const builder=vendetta.metro.findByProps('Gesture')?.Gesture;
     const detector=vendetta.metro.findByProps('GestureDetector')?.GestureDetector;
-    if(typeof builder?.Manual==='function' && detector)return {builder,detector};
+    if(typeof builder?.LongPress==='function' && detector)return {builder,detector};
   }catch(_){}
   return null;
 }
@@ -162,7 +162,7 @@ function guardLongPress(element) {
 function MediaBox({element,media,layoutStyle}) {
   const nested=React.useContext(mediaContext);
   const ref=React.useRef(null),rect=React.useRef(null),gesture=React.useRef(null),eventVersion=React.useRef(0),alive=React.useRef(true),[visible,setVisible]=React.useState(false),[revision,setRevision]=React.useState(0),[feedback,setFeedback]=React.useState(null);
-  const nativeGesture=React.useRef(null),nativeBegun=React.useRef(false);
+  const nativeGesture=React.useRef(null);
   const session=React.useRef({blocked:false,owned:false,targets:new Set(),rect:null,releaseTimer:null});
   const resetSession=()=>{clearTimeout(session.current.releaseTimer);session.current.blocked=false;session.current.owned=false;session.current.targets.clear();touchSessions.delete(session.current);};
   const measured=()=>ref.current?.measureInWindow((x,y,width,height)=>{rect.current={x,y,width,height};session.current.rect=rect.current;});
@@ -177,6 +177,7 @@ function MediaBox({element,media,layoutStyle}) {
     gesture.current=createGesture({getRect:()=>rect.current,show:()=>{if(enabled && alive.current)setVisible(true);},hide:()=>{if(alive.current)setVisible(false);},download:()=>download(media,message=>{if(enabled && alive.current)setFeedback(message);}),
       onState:state=>{
         if(!alive.current)return;
+        if(media.video && (state.canceled || state.count===2))videoTrace.last=state.canceled?state.reason:state.phase==='download'?'Download hold completed':state.phase==='url'?'URL shown; continuing hold':'Two fingers validated; hold timers running';
         if(!state.count)session.current.owned=false;
         else if(state.count>=2 && !state.canceled)session.current.owned=true;
         if(state.canceled)setFeedback(state.count>=2?state.reason:null);
@@ -187,7 +188,7 @@ function MediaBox({element,media,layoutStyle}) {
   const cancel=()=>{resetSession();eventVersion.current++;gesture.current?.cancel();};
   const feed=(event,onMeasured)=>{
     if(!enabled)return;
-    if(media.video){videoTrace.touches++;videoTrace.last="Video received "+(event.nativeEvent?.touches?.length || 0)+" touches";}
+    if(media.video){videoTrace.touches++;videoTrace.maxTouches=Math.max(videoTrace.maxTouches,event.nativeEvent?.touches?.length || 0);}
     const touches=Array.from(event.nativeEvent?.touches || [],t=>({identifier:t.identifier,pageX:t.pageX,pageY:t.pageY,target:t.target}));
     // Latch suppression as soon as a second finger arrives, before asynchronous measurement.
     clearTimeout(session.current.releaseTimer);
@@ -224,22 +225,23 @@ function MediaBox({element,media,layoutStyle}) {
         const ended=up?new Set((event.changedTouches || []).map(t=>t.id)):null;
         return (event.allTouches || []).filter(t=>!ended?.has(t.id)).map(t=>({identifier:t.id,pageX:t.absoluteX,pageY:t.absoluteY,target:null}));
       };
-      const nativeFeed=(event,manager,up=false)=>{
-        if(!enabled)return;
-        const touches=touchList(event,up);
-        if(!nativeBegun.current && touches.length){manager.begin();nativeBegun.current=true;}
-        feed({nativeEvent:{touches}},(points,bounds)=>{
-          if(points.length===2 && points.every(point=>inside(point,bounds)) && gesture.current?.claimed())manager.activate();
-          else if(points.length>2 || (points.length>=2 && !gesture.current?.claimed()))manager.fail();
-        });
-        if(!touches.length){manager.end();nativeBegun.current=false;}
+      const nativeFeed=(event,up=false)=>{
+        if(enabled)feed({nativeEvent:{touches:touchList(event,up)}});
       };
-      nativeGesture.current=nativeGestureAPI.builder.Manual().runOnJS(true)
-        .onTouchesDown((event,manager)=>nativeFeed(event,manager))
-        .onTouchesMove((event,manager)=>nativeFeed(event,manager))
-        .onTouchesUp((event,manager)=>nativeFeed(event,manager,true))
-        .onTouchesCancelled(()=>{nativeBegun.current=false;cancel();})
-        .onFinalize(()=>{nativeBegun.current=false;cancel();});
+      // Manual state changes call Reanimated.setGestureState from JS. Avoid that
+      // bridge entirely: Android recognizes exactly two pointers synchronously,
+      // before Discord's ordinary one-finger long press can activate.
+      nativeGesture.current=nativeGestureAPI.builder.LongPress().runOnJS(true)
+        .numberOfPointers(2).minDuration(0).maxDistance(12)
+        .onStart(()=>{videoTrace.nativeState='active (two fingers)';})
+        .onTouchesDown(event=>nativeFeed(event))
+        .onTouchesMove(event=>nativeFeed(event))
+        .onTouchesUp(event=>nativeFeed(event,true))
+        .onTouchesCancelled(()=>{videoTrace.nativeState='touches cancelled';cancel();})
+        .onFinalize((event,success)=>{
+          videoTrace.nativeState=success?'finished':'cancelled/failed (state '+event?.state+')';
+          cancel();
+        });
       videoTrace.last='Native video gesture listener attached; waiting for touches';
     }catch(error){videoTrace.last='Native gesture setup failed: '+String(error?.message || error);nativeGesture.current=null;}
   }
@@ -403,13 +405,13 @@ function onLoad() {
   } catch(error) {onUnload();startupError(error);throw error;}
 }
 function onUnload() {
-  enabled=false;nativeGestureAPI=null;videoTrace.calls=0;videoTrace.wrapped=0;videoTrace.touches=0;videoTrace.last="Open a full-screen video first";videoDiagnostics.clear();menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
+  enabled=false;nativeGestureAPI=null;videoTrace.calls=0;videoTrace.wrapped=0;videoTrace.touches=0;videoTrace.maxTouches=0;videoTrace.nativeState="waiting";videoTrace.last="Open a full-screen video first";videoDiagnostics.clear();menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
   for(const item of instances)item.clear();
 }
 function settings() {
   return create(RN.ScrollView,{contentContainerStyle:{padding:20}},
     create(RN.Text,{style:{color:'#fff',fontSize:20,fontWeight:'600',marginBottom:16}},'Media Gestures'),
     create(RN.Text,{style:{color:'#b8bbc4',fontSize:14,lineHeight:22}},
-      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.status || (details.wrapped?'wrapped':'missing layout'))+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nFull-screen callback calls: '+videoTrace.calls+'\nFull-screen children wrapped: '+videoTrace.wrapped+'\nNative video gesture API: '+(nativeGestureAPI?'available':'not detected')+'\nVideo touch events: '+videoTrace.touches+'\nVideo detail: '+videoTrace.last+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
+      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.status || (details.wrapped?'wrapped':'missing layout'))+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nFull-screen callback calls: '+videoTrace.calls+'\nFull-screen children wrapped: '+videoTrace.wrapped+'\nNative video gesture API: '+(nativeGestureAPI?'available':'not detected')+'\nVideo recognizer: native two-finger LongPress (v0.1.12)\nNative recognition: '+videoTrace.nativeState+'\nMost simultaneous video touches: '+videoTrace.maxTouches+'\nVideo touch events: '+videoTrace.touches+'\nVideo detail: '+videoTrace.last+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
 }
 return {onLoad,onUnload,settings};
