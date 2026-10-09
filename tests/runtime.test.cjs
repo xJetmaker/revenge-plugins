@@ -28,7 +28,7 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
   return{view,owner,scrollTo(value){currentX=value;},event(points){return {nativeEvent:{touches:points.map((point,i)=>({identifier:i+1,target:42,pageX:point,pageY:10}))}};}};
  }
  async function tick(ms){clock+=ms;for(let i=0;i<15;i++){for(const[id,t]of [...timers])if(t.due<=clock){timers.delete(id);t.fn();}await Promise.resolve();}}
- return {plugin,RN,video,renderNested(element){nestedContext=true;active={refs:[],values:[],effects:[]};try{return element.type(element.props);}finally{nestedContext=false;}},mountVideo(props,x=0){const element=React.createElement(video,props),owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=element.type(element.props),view=rendered.props.children[0];owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};for(const effect of owner.effects)effect();return {view,owner,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};},sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
+ return {plugin,RN,video,renderNested(element){nestedContext=true;active={refs:[],values:[],effects:[]};try{return element.type(element.props);}finally{nestedContext=false;}},mountVideo(props,x=0,type=video){const element=React.createElement(type,props),owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=element.type(element.props),view=rendered.props.children[0];owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};for(const effect of owner.effects)effect();return {view,owner,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};},sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
 }
 test('packaged plugin downloads the touched batch item once and cleans up its temporary media',async()=>{
  const f=fixture();f.plugin.onLoad();const a=f.mount(101),b=f.mount(102,200);
@@ -222,4 +222,23 @@ test('video poster-only and external sources are skipped, and nested media wrapp
  for(const src of [{uri:'https://cdn.discordapp.com/attachments/100/202/poster.jpg'},{videoURI:'https://example.com/a.mp4',uri:'https://cdn.discordapp.com/attachments/100/202/poster.jpg'}])assert.equal(f.React.createElement(f.video,{src,width:100,height:100}).type,f.video);
  const original=f.React.createElement(f.RN.Image,{source:{uri:'https://cdn.discordapp.com/attachments/100/202/a.mp4'},style:{width:100,height:100}});
  assert.equal(f.renderNested(original),original.props.element);f.plugin.onUnload();
+});
+
+test('full-screen video with anonymous memo export and absolute-fill layout uses its own original URL',async()=>{
+ const f=fixture({nativeDownload:true}),fullscreen={type:function FullscreenMedia(){}};f.plugin.onLoad();
+ const source={uri:'https://cdn.discordapp.com/attachments/100/302/poster.jpg',videoURI:'https://media.discordapp.net/attachments/100/302/movie.mp4?ex=a&hm=b&format=jpeg'};
+ const tile=f.mountVideo({source,style:{position:'absolute',top:0,left:0,right:0,bottom:0},paused:false},200,fullscreen);
+ assert.equal(tile.view.props.children[0].type,fullscreen);
+ const event=tile.event([210,220]);event.nativeEvent.touches[1].target=43;
+ tile.view.props.onLayout();assert.equal(tile.view.props.onStartShouldSetResponderCapture(event),true);
+ assert.equal(tile.view.props.onResponderGrant(event),true);
+ await f.tick(450);assert.equal(tile.owner.values[0],true);await f.tick(1050);
+ assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/302/movie.mp4?ex=a&hm=b');assert.equal(f.nativeCalls.length,1);
+ f.plugin.onUnload();
+});
+test('unknown video renderers with direct per-tile sources are covered without widening batch hitboxes',async()=>{
+ const f=fixture({nativeDownload:true});f.plugin.onLoad();function UnnamedVideo(){}
+ const tile=f.mountVideo({source:{uri:'https://cdn.discordapp.com/attachments/100/303/b.mp4'},style:{width:100,height:100}},200,UnnamedVideo);
+ tile.view.props.onLayout();assert.equal(tile.view.props.onStartShouldSetResponderCapture(tile.event([210,310])),false);
+ tile.view.props.onResponderStart(tile.event([210,310]));await f.tick(1500);assert.equal(f.nativeCalls.length,0);f.plugin.onUnload();
 });

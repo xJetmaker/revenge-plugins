@@ -78,10 +78,11 @@ function base64(bytes) {
 return {mediaFromSource,inside,createGesture,base64};
 })();
 "use strict";
-const {mediaFromSource,createGesture,base64}=core;
+const {mediaFromSource,createGesture,base64,inside}=core;
 const {React,RN}= {React:vendetta.metro.common.React,RN:vendetta.metro.common.ReactNative};
 const create=React.createElement.bind(React),unpatches=[],instances=new Set(),inFlight=new Set(),controllers=new Set(),touchSessions=new Set(),functionMedia=new Set(),longPressGuards=new WeakMap();
 const mediaContext=React.createContext(false);
+const videoDiagnostics=new Map();
 let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null,menuGuard=false,pressabilityGuard=false;
 const notify=message=>{try{vendetta.ui.toasts.showToast(message);}catch(error){vendetta.logger?.warn?.('Media Gestures toast unavailable: '+String(error));}};
 function startupError(error) {
@@ -277,7 +278,11 @@ function MediaBox({element,media}) {
   const capture=event=>{
     const touches=event.nativeEvent?.touches || [];
     if(!enabled || touches.length!==2)return false;
-    if(touches.some(t=>t.target!==touches[0].target))return false;
+    // Native video surfaces and controls can give fingers different target IDs
+    // even inside the same tile. Geometry, not target equality, defines ownership.
+    if(rect.current) {
+      if(touches.some(t=>!inside(t,rect.current)))return false;
+    } else if(touches.some(t=>t.target!==touches[0].target))return false;
     feed(event);return true;
   };
   const {outer,inner}=splitStyle(element.props.style);
@@ -288,7 +293,7 @@ function MediaBox({element,media}) {
     ref,collapsable:false,style:outer,onLayout:measured,
     onTouchStart:feed,onTouchMove:feed,onTouchEnd:feed,onTouchCancel:cancel,
     onStartShouldSetResponderCapture:capture,onMoveShouldSetResponderCapture:capture,
-    onResponderGrant:feed,onResponderStart:feed,onResponderEnd:feed,onResponderMove:feed,
+    onResponderGrant:event=>{feed(event);return true;},onResponderStart:feed,onResponderEnd:feed,onResponderMove:feed,
     onResponderRelease:feed,onResponderTerminate:cancel,
     onResponderTerminationRequest:()=>!(gesture.current?.claimed()),
   },clone,(visible || feedback)?create(RN.View,{pointerEvents:'none',style:{position:'absolute',top:0,left:0,right:0,zIndex:999,elevation:8,padding:7,backgroundColor:'rgba(15,17,22,0.94)',borderRadius:6}},
@@ -300,11 +305,14 @@ function wrap(element,source) {
   if(!media)return element;
   // Zero-sized or intrinsic-sized views cannot safely become wrapper boxes.
   const style=RN.StyleSheet.flatten(element.props.style)||{};
-  if(!(style.width || style.flex || style.flexGrow) || !(style.height || style.aspectRatio || style.flex || style.flexGrow))return element;
+  const stretched=style.position==='absolute';
+  const width=style.width || style.flex || style.flexGrow || (stretched && style.left!=null && style.right!=null);
+  const height=style.height || style.aspectRatio || style.flex || style.flexGrow || (stretched && style.top!=null && style.bottom!=null);
+  if(!width || !height)return element;
   return create(MediaBox,{element,media,key:element.key});
 }
 function videoSource(props) {
-  const source=props?.src || props?.source;
+  const source=props?.src || props?.source || props?.videoURI;
   if(!source || Array.isArray(source))return source;
   // Prefer the original video over its poster or converted thumbnail.
   return source.videoURI || source.sourceURI || source;
@@ -320,7 +328,12 @@ function wrapVideo(element) {
   // Only original video attachments: no avatars, posters or camera streams.
   if(!media?.video)return element;
   const original=Object.keys(dimensions).length?React.cloneElement(element,{style:[dimensions,props.style]}):element;
-  return wrap(original,media.url);
+const wrapped=wrap(original,media.url);
+  const type=element.type?.displayName || element.type?.name || element.type?.type?.name || (typeof element.type==='string'?element.type:'anonymous');
+  videoDiagnostics.set(type,{wrapped:wrapped!==original,props:Object.keys(props).slice(0,16).join(', ')});
+  if(videoDiagnostics.size>6)videoDiagnostics.delete(videoDiagnostics.keys().next().value);
+  if(wrapped!==original)videoPatched=true;
+  return wrapped;
 }
 function discoverVideos() {
   const candidates=new Set();
@@ -328,7 +341,7 @@ function discoverVideos() {
     const module=vendetta.metro.findByName('Video',false);
     if(module){candidates.add(module.default || module.Video || module);}
   }catch(_){}
-  for(const name of ['Video','VideoComponent']) {
+  for(const name of ['Video','VideoComponent','MediaModalVideo']) {
     try {const component=vendetta.metro.findByName(name);if(component)candidates.add(component.default || component);}catch(_){}
     try {for(const component of vendetta.metro.findByDisplayNameAll?.(name) || [])candidates.add(component);}catch(_){}
   }
@@ -367,7 +380,12 @@ function patchFactories() {
       unpatches.push(vendetta.patcher.after(name,holder,(args,result)=>{
         if(!enabled || !React.isValidElement(result))return result;
         const element=guardLongPress(result);
-        return videoComponents.has(element.type)?wrapVideo(element):functionMedia.has(element.type)?wrap(element,element.props?.source):element;
+        // Match the source of one rendered tile, including full-screen memoized
+        // media renderers whose export names differ between Discord builds.
+        // Never inspect a whole message's attachment list or pick a poster URL.
+        const source=videoSource(element.props);
+        if(source && (videoComponents.has(element.type) || mediaFromSource(source)?.video))return wrapVideo(element);
+        return functionMedia.has(element.type)?wrap(element,element.props?.source):element;
       }));count++;
     }catch(_){}
   }
@@ -390,14 +408,14 @@ function onLoad() {
   } catch(error) {onUnload();startupError(error);throw error;}
 }
 function onUnload() {
-  enabled=false;menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
+  enabled=false;videoDiagnostics.clear();menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
   for(const item of instances)item.clear();
 }
 function settings() {
   return create(RN.ScrollView,{contentContainerStyle:{padding:20}},
     create(RN.Text,{style:{color:'#fff',fontSize:20,fontWeight:'600',marginBottom:16}},'Media Gestures'),
     create(RN.Text,{style:{color:'#b8bbc4',fontSize:14,lineHeight:22}},
-      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
+      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.wrapped?'wrapped':'missing layout')+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
 }
 return {onLoad,onUnload,settings};
 
