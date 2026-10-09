@@ -54,16 +54,28 @@ function createGesture({getRect,show,hide,download,setTimer=setTimeout,clearTime
       const start=starts.get(t.identifier);
       if(start && Math.hypot(t.pageX-start.x,t.pageY-start.y)>12){abort('Hold still to download');return;}
     }
-    if(next<count || [...starts.keys()].some(id=>!ids.has(id))){abort('Keep both fingers down until the download starts');return;}
+    const missing=[...starts.keys()].filter(id=>!ids.has(id));
+    // Once the URL is visible, one original finger anchors it to this tile.
+    // A new second finger is the deliberate download action, not a timer.
+    if(count===2 && next===1 && active && missing.length===1){
+      clear();for(const id of missing)starts.delete(id);count=1;
+      onState({count,phase:downloaded?'downloaded':'reading'});return;
+    }
+    if(next<count || missing.length){abort('Keep both fingers down until the URL appears');return;}
     for(const t of list)if(!starts.has(t.identifier))starts.set(t.identifier,{x:t.pageX,y:t.pageY});
     if(next===count)return;
-    clear();hide();active=false;count=next;onState({count});
-    if(next!==2 || downloaded)return;
+    clear();count=next;
+    if(active){
+      if(next===2 && !downloaded){downloaded=true;onState({count,phase:'download'});download();}
+      else onState({count,phase:downloaded?'downloaded':'reading'});
+      return;
+    }
+    hide();onState({count});
+    if(next!==2)return;
     const token=generation;
     schedule(450,token,()=>{active=true;show();onState({count,phase:'url'});});
-    schedule(1500,token,()=>{downloaded=true;active=true;hide();onState({count,phase:'download'});download();});
   }
-  return {feed,cancel:reset,claimed:()=>count===2 && !canceled,active:()=>active};
+  return {feed,cancel:reset,claimed:()=>!canceled && (count===2 || active),active:()=>active};
 }
 function base64(bytes) {
   const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';

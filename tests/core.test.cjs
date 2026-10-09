@@ -18,20 +18,33 @@ test('unsupported, malformed and external sources fail closed',()=>{
  for(const uri of ['https://evil.com/a.png','file:///tmp/a.png','https://cdn.discordapp.com.evil.com/attachments/1/2/a.png','http://cdn.discordapp.com/attachments/1/2/a.png','https://cdn.discordapp.com/avatars/1/a.png','https://cdn.discordapp.com/attachments/1/2/a.exe'])assert.equal(mediaFromSource({uri}),null);
  assert.equal(mediaFromSource([]),null);assert.equal(mediaFromSource(123),null);
 });
-test('one finger stays untouched; two show URL at 450 ms and release cancels download',()=>{
+test('one finger stays untouched; two show URL at 450 ms and one finger keeps URL visible',()=>{
  const f=fixture();f.g.feed([t(1)]);assert.equal(f.timers.size,0);assert.equal(f.g.claimed(),false);
  f.g.feed([t(1),t(2,20)]);f.tick(449);assert.equal(f.shown,0);f.tick(1);assert.equal(f.shown,1);assert.equal(f.saved,0);
- f.g.feed([t(1)]);f.tick(1500);assert.equal(f.saved,0);assert.equal(f.g.active(),false);f.g.feed([]);assert.equal(f.timers.size,0);
+ f.g.feed([t(1)]);f.tick(1500);assert.equal(f.saved,0);assert.equal(f.g.active(),true);f.g.feed([]);assert.equal(f.timers.size,0);
 });
-test('continuous two-finger hold downloads exactly once at 1500 ms without resetting on duplicate events',()=>{
+test('reading has no time limit; returning a second finger downloads exactly once',()=>{
  const f=fixture(),points=[t(1),t(2,20)];f.g.feed(points);f.tick(450);assert.equal(f.shown,1);
- f.g.feed(points);f.tick(1049);assert.equal(f.saved,0);f.tick(1);assert.equal(f.saved,1);
- f.g.feed(points);f.tick(5000);assert.equal(f.saved,1);
+ f.tick(60000);assert.equal(f.saved,0);
+ f.g.feed([t(1)]);const hidden=f.hidden;f.tick(60000);
+ assert.equal(f.g.active(),true);assert.equal(f.g.claimed(),true);assert.equal(f.hidden,hidden);assert.equal(f.saved,0);
+ f.g.feed([t(1),t(9,20)]);assert.equal(f.saved,1);
+ f.g.feed([t(1)]);f.g.feed(points);f.tick(5000);assert.equal(f.saved,1);
+ f.g.feed([]);assert.equal(f.g.active(),false);
+});
+test('lifting before the URL appears or moving the anchor cancels without saving',()=>{
+ const f=fixture();f.g.feed([t(1),t(2,20)]);f.tick(449);f.g.feed([t(1)]);f.g.feed([t(1),t(2,20)]);f.tick(1000);assert.equal(f.shown,0);assert.equal(f.saved,0);
+ f.g.feed([]);f.g.feed([t(1),t(2,20)]);f.tick(450);f.g.feed([t(1)]);f.g.feed([t(1,30)]);f.g.feed([t(1,30),t(2,20)]);assert.equal(f.saved,0);assert.equal(f.g.active(),false);
+});
+test('returning finger must stay in the same tile and preserve the anchor',()=>{
+ for(const points of [[t(1),t(9,100)],[t(3),t(9,20)]]){
+  const f=fixture();f.g.feed([t(1),t(2,20)]);f.tick(450);f.g.feed([t(1)]);f.g.feed(points);assert.equal(f.saved,0);assert.equal(f.g.active(),false);
+ }
 });
 test('third finger cancels rather than downloading or restarting on release',()=>{
  const f=fixture();f.g.feed([t(1),t(2,20)]);f.tick(450);f.g.feed([t(1),t(2,20),t(3,30)]);
  f.tick(1500);assert.equal(f.saved,0);f.g.feed([t(1),t(2,20)]);f.tick(1500);assert.equal(f.saved,0);
- f.g.feed([]);f.g.feed([t(1),t(2,20)]);f.tick(1500);assert.equal(f.saved,1);
+ f.g.feed([]);f.g.feed([t(1),t(2,20)]);f.tick(450);f.g.feed([t(1)]);f.g.feed([t(1),t(2,20)]);assert.equal(f.saved,1);
 });
 test('batch neighbours and tile edges cancel instead of selecting another attachment',()=>{
  const f=fixture();f.g.feed([t(1),t(2,100)]);f.tick(1500);assert.equal(f.shown,0);assert.equal(f.saved,0);
@@ -42,10 +55,16 @@ test('movement, replacement fingers and extra fingers cannot trigger a save',()=
   const f=fixture();f.g.feed([t(1),t(2,20)]);f.g.feed(points);f.tick(1500);assert.equal(f.saved,0);
  }
 });
-test('remeasured scrolling bounds are used, and termination cancels both timers',()=>{
+test('remeasured scrolling bounds are used, and termination cancels pending timers',()=>{
  const f=fixture();f.rect={x:0,y:200,width:100,height:100};f.g.feed([t(1,10,210),t(2,20,210)]);f.tick(450);assert.equal(f.shown,1);
  f.g.cancel();f.tick(1500);assert.equal(f.saved,0);assert.equal(f.timers.size,0);
 });
 test('base64 encoding matches Node for binary media and padding boundaries',()=>{
  for(const count of [0,1,2,3,7,16384,32769]){const bytes=Uint8Array.from({length:count},(_,i)=>i%256);assert.equal(base64(bytes),Buffer.from(bytes).toString('base64'));}
+});
+
+test('either finger can anchor the URL; releasing both requires a fresh hold',()=>{
+ const f=fixture();f.g.feed([t(1),t(2,20)]);f.tick(450);f.g.feed([t(2,20)]);f.tick(60000);assert.equal(f.g.active(),true);
+ f.g.feed([t(2,20),t(7,30)]);assert.equal(f.saved,1);f.g.feed([]);
+ f.g.feed([t(2,20),t(7,30)]);assert.equal(f.saved,1);f.tick(450);f.g.feed([t(7,30)]);f.g.feed([t(7,30),t(9,40)]);assert.equal(f.saved,2);
 });

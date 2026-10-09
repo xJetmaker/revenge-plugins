@@ -54,16 +54,28 @@ function createGesture({getRect,show,hide,download,setTimer=setTimeout,clearTime
       const start=starts.get(t.identifier);
       if(start && Math.hypot(t.pageX-start.x,t.pageY-start.y)>12){abort('Hold still to download');return;}
     }
-    if(next<count || [...starts.keys()].some(id=>!ids.has(id))){abort('Keep both fingers down until the download starts');return;}
+    const missing=[...starts.keys()].filter(id=>!ids.has(id));
+    // Once the URL is visible, one original finger anchors it to this tile.
+    // A new second finger is the deliberate download action, not a timer.
+    if(count===2 && next===1 && active && missing.length===1){
+      clear();for(const id of missing)starts.delete(id);count=1;
+      onState({count,phase:downloaded?'downloaded':'reading'});return;
+    }
+    if(next<count || missing.length){abort('Keep both fingers down until the URL appears');return;}
     for(const t of list)if(!starts.has(t.identifier))starts.set(t.identifier,{x:t.pageX,y:t.pageY});
     if(next===count)return;
-    clear();hide();active=false;count=next;onState({count});
-    if(next!==2 || downloaded)return;
+    clear();count=next;
+    if(active){
+      if(next===2 && !downloaded){downloaded=true;onState({count,phase:'download'});download();}
+      else onState({count,phase:downloaded?'downloaded':'reading'});
+      return;
+    }
+    hide();onState({count});
+    if(next!==2)return;
     const token=generation;
     schedule(450,token,()=>{active=true;show();onState({count,phase:'url'});});
-    schedule(1500,token,()=>{downloaded=true;active=true;hide();onState({count,phase:'download'});download();});
   }
-  return {feed,cancel:reset,claimed:()=>count===2 && !canceled,active:()=>active};
+  return {feed,cancel:reset,claimed:()=>!canceled && (count===2 || active),active:()=>active};
 }
 function base64(bytes) {
   const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -256,11 +268,11 @@ function MediaBox({element,media,layoutStyle}) {
     gesture.current=createGesture({getRect:()=>rect.current,show:()=>{if(enabled && alive.current)setVisible(true);},hide:()=>{if(alive.current)setVisible(false);},download:()=>download(media,message=>{if(enabled && alive.current)setFeedback(message);}),
       onState:state=>{
         if(!alive.current)return;
-        if(media.video && (state.canceled || state.count===2))videoTrace.last=state.canceled?state.reason:state.phase==='download'?'Download hold completed':state.phase==='url'?'URL shown; continuing hold':'Two fingers validated; hold timers running';
+        if(media.video && (state.canceled || state.count===2 || state.phase==='reading'))videoTrace.last=state.canceled?state.reason:state.phase==='downloaded'?'Download already requested for this gesture':state.phase==='download'?'Second finger returned; downloading':state.phase==='reading'?'One finger anchors the URL':state.phase==='url'?'URL shown; lift one finger to keep reading':'Two fingers validated; URL timer running';
         if(!state.count)session.current.owned=false;
-        else if(state.count>=2 && !state.canceled)session.current.owned=true;
+        else if((state.count>=2 || gesture.current?.active()) && !state.canceled)session.current.owned=true;
         if(state.canceled)setFeedback(state.count>=2?state.reason:null);
-        else setFeedback(state.count===2?(state.phase==='download'?'Starting download…':state.phase==='url'?'Keep holding to download; lift to only view the URL':'Hold two fingers still…'):null);
+        else if(state.phase!=='downloaded')setFeedback(state.phase==='download'?'Starting download…':state.phase==='reading'?'Put the second finger back to download':state.phase==='url'?'Lift one finger to keep reading; put it back to download':state.count===2?'Hold two fingers still…':null);
       }});
     return ()=>gesture.current?.cancel();
   },[media.key,media.url]);
@@ -479,7 +491,7 @@ function onLoad() {
   if(!patchForward(RN.Image) && !patchFunction(RN.Image))throw Error('No supported Image render hook. Image type: '+typeof RN.Image+'; fields: '+Object.keys(RN.Image || {}).join(', '));
   discoverVideos();
   appStateSubscription=RN.AppState?.addEventListener('change',state=>{if(state!=='active')for(const item of instances)item.clear();});
-  notify('Media Gestures: hold two fingers for URL; keep holding 1.5 seconds to download. Reload to attach to existing media.');
+  notify('Media Gestures: hold two fingers for URL; lift one to read, return it to download. Reload to attach to existing media.');
   try {delete vendetta.plugin.storage.lastStartupError;}catch(_){}
   } catch(error) {onUnload();startupError(error);throw error;}
 }
@@ -491,7 +503,7 @@ function settings() {
   return create(RN.ScrollView,{contentContainerStyle:{padding:20}},
     create(RN.Text,{style:{color:'#fff',fontSize:20,fontWeight:'600',marginBottom:16}},'Media Gestures'),
     create(RN.Text,{style:{color:'#b8bbc4',fontSize:14,lineHeight:22}},
-      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.status || (details.wrapped?'wrapped':'missing layout'))+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nFull-screen callback calls: '+videoTrace.calls+'\nFull-screen children wrapped: '+videoTrace.wrapped+'\nNative video gesture API: '+(nativeGestureAPI?'available':'not detected')+'\nVideo recognizer: native two-finger LongPress (v0.1.12)\nNative recognition: '+videoTrace.nativeState+'\nMost simultaneous video touches: '+videoTrace.maxTouches+'\nVideo touch events: '+videoTrace.touches+'\nVideo detail: '+videoTrace.last+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
+      'Hold two fingers on one media tile for 0.45 seconds to show its URL. Lift one finger and keep the other still to read for as long as you want.\n\nPut the second finger back on the same tile to download once. Keeping two fingers held does not download automatically. Lift both fingers to close the URL. Moving or touching another tile cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.status || (details.wrapped?'wrapped':'missing layout'))+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nFull-screen callback calls: '+videoTrace.calls+'\nFull-screen children wrapped: '+videoTrace.wrapped+'\nNative video gesture API: '+(nativeGestureAPI?'available':'not detected')+'\nVideo recognizer: native two-finger LongPress (v0.1.13)\nNative recognition: '+videoTrace.nativeState+'\nMost simultaneous video touches: '+videoTrace.maxTouches+'\nVideo touch events: '+videoTrace.touches+'\nVideo detail: '+videoTrace.last+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
 }
 return {onLoad,onUnload,settings};
 

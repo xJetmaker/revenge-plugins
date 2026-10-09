@@ -43,9 +43,15 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
  }
  return {plugin,RN,video,mountWrapped,renderNested(element){nestedContext=true;active={refs:[],values:[],effects:[]};try{return element.type(element.props);}finally{nestedContext=false;}},mountVideo(props,x=0,type=video){const element=React.createElement(type,props),owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=element.type(element.props),child=rendered.props.children[0],view=child.type===gestureDetector?child.props.children[0]:child;owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};for(const effect of owner.effects)effect();return {view,owner,nativeGesture:child.type===gestureDetector?child.props.gesture:null,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};},sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
 }
+async function returnFinger(f,tile,points=[10,20]){
+ await f.tick(450);
+ tile.view.props.onTouchEnd(tile.event([points[0]]));
+ tile.view.props.onTouchStart(tile.event(points));
+ await f.tick(0);
+}
 test('packaged plugin downloads the touched batch item once and cleans up its temporary media',async()=>{
  const f=fixture();f.plugin.onLoad();const a=f.mount(101),b=f.mount(102,200);
- b.view.props.onTouchStart(b.event([210,220]));await f.tick(1500);
+ b.view.props.onTouchStart(b.event([210,220]));await returnFinger(f,b,[210,220]);
  assert.equal(f.requests.length,1);assert.equal(f.requests[0],'https://cdn.discordapp.com/attachments/100/102/image.png?ex=a&hm=b');
  assert.equal(f.saves.length,1);assert.equal(f.saves[0].options.type,'photo');assert.equal(f.files[0][3],'base64');assert.equal(f.removes.length,1);
  b.view.props.onTouchMove(b.event([210,220]));await f.tick(1500);assert.equal(f.requests.length,1);
@@ -58,7 +64,7 @@ test('packaged tooltip has no copy action, remeasures after scrolling and hides 
 });
 test('missing native gallery support gives an error without fetching or falsely reporting a save',async()=>{
  const f=fixture({gallery:false});f.plugin.onLoad();const tile=f.mount(101);
- tile.view.props.onTouchStart(tile.event([10,20]));await f.tick(1500);assert.equal(f.requests.length,0);assert.equal(f.saves.length,0);
+ tile.view.props.onTouchStart(tile.event([10,20]));await returnFinger(f,tile,[10,20]);assert.equal(f.requests.length,0);assert.equal(f.saves.length,0);
  assert.ok(f.toasts.some(m=>m.includes('unavailable')));f.plugin.onUnload();
 });
 test('neighbouring tiles are never substituted and disabling cancels pending gestures',async()=>{
@@ -86,7 +92,7 @@ test('function Image supports both React and JSX factories without changing its 
  for(const jsx of [false,true]) {
   const tile=f.mount(102,200,jsx);
   assert.equal(tile.view.props.children[0].type,image);
-  tile.view.props.onTouchStart(tile.event([210,220]));await f.tick(1500);
+  tile.view.props.onTouchStart(tile.event([210,220]));await returnFinger(f,tile,[210,220]);
   assert.equal(f.requests.at(-1),'https://cdn.discordapp.com/attachments/100/102/image.png?ex=a&hm=b');
  }
  const props={source:{uri:'https://cdn.discordapp.com/avatars/100/a.png'},style:{width:100,height:100}};
@@ -113,7 +119,7 @@ test('one-finger menu works, multi-finger holds suppress stale ancestor long pre
  tile.view.props.onTouchEnd(tile.event([]));parent.props.onLongPress(single);assert.equal(menus,1);
  await f.tick(0);parent.props.onLongPress(single);assert.equal(menus,2);
  tile.view.props.onTouchStart(tile.event([10,20]));parent.props.onLongPress(single);assert.equal(menus,2);
- await f.tick(1500);assert.equal(f.requests.length,1);
+ await returnFinger(f,tile);assert.equal(f.requests.length,1);
  f.plugin.onUnload();parent.props.onLongPress(single);assert.equal(menus,3);
 });
 test('menu suppression stays within the touched media and honors multi-touch callback events',()=>{
@@ -126,13 +132,13 @@ test('menu suppression stays within the touched media and honors multi-touch cal
  f.plugin.onUnload();
 });
 
-test('longer two-finger hold continues past URL display and downloads once with visible feedback',async()=>{
+test('one-finger reading persists and returning the second finger downloads with visible feedback',async()=>{
  const f=fixture({functionImage:true});f.plugin.onLoad();const tile=f.mount(102,200);
  tile.view.props.onResponderGrant(tile.event([210,220]));await f.tick(450);
  assert.equal(tile.owner.values[0],true);
  tile.view.props.onResponderStart(tile.event([210,220]));
- assert.equal(tile.owner.values[0],true);assert.match(tile.owner.values[2],/Keep holding/);
- await f.tick(1500);assert.equal(f.requests.length,1);assert.equal(f.saves.length,1);
+ assert.equal(tile.owner.values[0],true);assert.match(tile.owner.values[2],/Lift one finger/);
+ await returnFinger(f,tile,[210,220]);assert.equal(f.requests.length,1);assert.equal(f.saves.length,1);
  assert.equal(f.storage.lastDownloadStatus,'Saved media to your gallery');
  assert.equal(tile.owner.values[2],'Saved media to your gallery');
  tile.view.props.onResponderEnd(tile.event([210,220]));await f.tick(1500);assert.equal(f.requests.length,1);
@@ -147,7 +153,7 @@ test('download cancellation explains why no download starts, while neighbours st
 });
 test('missing gallery support is visible even when toasts are broken',async()=>{
  const f=fixture({gallery:false,brokenToast:true});f.plugin.onLoad();const tile=f.mount(101);
- tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
+ tile.view.props.onResponderStart(tile.event([10,20]));await returnFinger(f,tile,[10,20]);
  assert.equal(f.alerts.length,1);assert.match(f.alerts[0].message,/Gallery saving is unavailable/);
  assert.match(tile.owner.values[2],/Gallery saving is unavailable/);
  assert.equal(f.requests.length,0);assert.equal(f.storage.lastDownloadStatus,f.alerts[0].message);
@@ -161,7 +167,7 @@ test('action-sheet entry point cannot interrupt an owned two-finger hold, even w
  tile.view.props.onResponderStart(tile.event([210,220]));
  assert.equal(f.sheets.openLazy('lazy','message-menu',{}),undefined);
  assert.equal(f.sheets.opened.length,1);
- await f.tick(1500);assert.equal(f.saves.length,1);
+ await returnFinger(f,tile,[210,220]);assert.equal(f.saves.length,1);
  tile.view.props.onResponderEnd(tile.event([210,220]));
  f.sheets.openLazy('lazy','message-menu',{});assert.equal(f.sheets.opened.length,1);
  tile.view.props.onResponderEnd(tile.event([]));await f.tick(0);
@@ -176,7 +182,7 @@ test('pre-existing Pressability instances retain single-finger long presses but 
  tile.view.props.onResponderStart(tile.event([10,20]));
  assert.equal(pressable._handleLongPress(event),undefined);
  assert.equal(pressable._handleLongPress(),undefined);assert.equal(pressable.calls,1);
- await f.tick(1500);assert.equal(f.saves.length,1);
+ await returnFinger(f,tile);assert.equal(f.saves.length,1);
  f.plugin.onUnload();assert.equal(f.Pressability.prototype._handleLongPress,original);
  assert.equal(pressable._handleLongPress(event),'long press');assert.equal(pressable.calls,2);
 });
@@ -190,7 +196,7 @@ test('touches split between tiles do not globally block action sheets',()=>{
 test('Discord native downloader saves selected batch media without CameraRoll, fetch or base64 copies',async()=>{
  const f=fixture({gallery:false,nativeDownload:true});f.plugin.onLoad();const tile=f.mount(102,200);
  tile.view.props.onResponderStart(tile.event([210,220]));await f.tick(450);assert.equal(f.nativeCalls.length,0);
- await f.tick(1050);assert.equal(f.nativeCalls.length,1);
+ await returnFinger(f,tile,[210,220]);assert.equal(f.nativeCalls.length,1);
  assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/102/image.png?ex=a&hm=b');assert.equal(f.nativeCalls[0].gif,0);
  assert.equal(f.requests.length,0);assert.equal(f.files.length,0);assert.equal(f.storage.lastDownloadStatus,'Media saved by Discord');
  tile.view.props.onResponderMove(tile.event([210,220]));await f.tick(1500);assert.equal(f.nativeCalls.length,1);f.plugin.onUnload();
@@ -198,21 +204,21 @@ test('Discord native downloader saves selected batch media without CameraRoll, f
 test('GIF uses Discord GIF flag; video keeps flag zero and original video URL',async()=>{
  for(const [extension,flag] of [['gif',1],['mp4',0]]) {
   const f=fixture({gallery:false,nativeDownload:true});f.plugin.onLoad();const tile=f.mount(102,0,false,extension);
-  tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
+  tile.view.props.onResponderStart(tile.event([10,20]));await returnFinger(f,tile,[10,20]);
   assert.equal(f.nativeCalls[0].gif,flag);assert.match(f.nativeCalls[0].url,new RegExp('image\\.'+extension));f.plugin.onUnload();
  }
 });
 test('Discord download rejection or false result reports failure rather than claiming success',async()=>{
  for(const options of [{nativeFailure:true},{nativeResult:false}]) {
   const f=fixture({gallery:false,nativeDownload:true,...options});f.plugin.onLoad();const tile=f.mount(101);
-  tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
+  tile.view.props.onResponderStart(tile.event([10,20]));await returnFinger(f,tile,[10,20]);
   assert.match(f.storage.lastDownloadStatus,/Download failed/);assert.equal(f.alerts.length,1);
   assert.equal(f.requests.length,0);f.plugin.onUnload();
  }
 });
 test('void native bridge reports a handoff without claiming a confirmed save',async()=>{
  const f=fixture({gallery:false,nativeDownload:true,nativeVoid:true});f.plugin.onLoad();const tile=f.mount(101);
- tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
+ tile.view.props.onResponderStart(tile.event([10,20]));await returnFinger(f,tile,[10,20]);
  assert.match(f.storage.lastDownloadStatus,/handed to Discord/);assert.equal(f.alerts.length,0);f.plugin.onUnload();
 });
 
@@ -221,13 +227,13 @@ test('class-based video tiles use src.videoURI and separate dimensions, preservi
  const uri='https://media.discordapp.net/attachments/100/202/movie.mp4?ex=a&hm=b&format=jpeg&width=100';
  const tile=f.mountVideo({src:{uri:'https://cdn.discordapp.com/attachments/100/202/poster.jpg',videoURI:uri},width:100,height:100,paused:true,ref,onPress,onLoad},200);
  const clone=tile.view.props.children[0];assert.equal(clone.type,f.video);assert.equal(clone.props.ref,ref);assert.equal(clone.props.onPress,onPress);assert.equal(clone.props.onLoad,onLoad);assert.equal(clone.props.paused,true);
- tile.view.props.onResponderStart(tile.event([210,220]));await f.tick(450);assert.equal(tile.owner.values[0],true);await f.tick(1050);
+ tile.view.props.onResponderStart(tile.event([210,220]));await f.tick(450);assert.equal(tile.owner.values[0],true);await returnFinger(f,tile,[210,220]);
  assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/202/movie.mp4?ex=a&hm=b');assert.equal(f.nativeCalls.length,1);f.plugin.onUnload();
 });
 test('function, memo and forward-ref video components are intercepted without calling them outside React',async()=>{
  for(const videoShape of ['function','memo','forward']) {
   const f=fixture({videoShape,nativeDownload:true});f.plugin.onLoad();const tile=f.mountVideo({source:{uri:'https://cdn.discordapp.com/attachments/100/203/a.webm'},style:{width:100,height:100}});
-  tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/203/a.webm');f.plugin.onUnload();
+  tile.view.props.onResponderStart(tile.event([10,20]));await returnFinger(f,tile,[10,20]);assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/203/a.webm');f.plugin.onUnload();
  }
 });
 test('video poster-only and external sources are skipped, and nested media wrappers cannot duplicate downloads',()=>{
@@ -245,7 +251,7 @@ test('full-screen video with anonymous memo export and absolute-fill layout uses
  const event=tile.event([210,220]);event.nativeEvent.touches[1].target=43;
  tile.view.props.onLayout();assert.equal(tile.view.props.onStartShouldSetResponderCapture(event),true);
  assert.equal(tile.view.props.onResponderGrant(event),true);
- await f.tick(450);assert.equal(tile.owner.values[0],true);await f.tick(1050);
+ await f.tick(450);assert.equal(tile.owner.values[0],true);await returnFinger(f,tile,[210,220]);
  assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/302/movie.mp4?ex=a&hm=b');assert.equal(f.nativeCalls.length,1);
  f.plugin.onUnload();
 });
@@ -267,7 +273,7 @@ test('full-screen presenter wraps renderMedia inside its actual sized child even
  assert.notEqual(media.type,'ActualVideoRenderer');assert.equal(media.props.element.props.paused,false);
  const rendered=f.renderNested(media);assert.equal(rendered,media.props.element);
  const tile=f.mountWrapped(media);
- tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
+ tile.view.props.onResponderStart(tile.event([10,20]));await returnFinger(f,tile,[10,20]);
  assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/402/movie.mp4?ex=a&hm=b');f.plugin.onUnload();
  const after=presenter.props.renderMedia.call({tag:'receiver'},{source,style:{width:'100%',height:'100%'}});assert.equal(after.type,'ActualVideoRenderer');
 });
@@ -292,7 +298,7 @@ test('presenter callback layout and video URL override empty style and poster me
  const media=presenter.props.renderMedia({source:{videoURI:'https://cdn.discordapp.com/attachments/100/602/movie.mp4'},style:{width:'100%',height:'100%'}});
  assert.equal(media.props.media.url,'https://cdn.discordapp.com/attachments/100/602/movie.mp4');
  assert.equal(media.props.element.props.source,poster);assert.deepEqual(media.props.element.props.style,{});
- const tile=f.mountWrapped(media);tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
+ const tile=f.mountWrapped(media);tile.view.props.onResponderStart(tile.event([10,20]));await returnFinger(f,tile,[10,20]);
  assert.equal(f.nativeCalls.length,1);assert.equal(f.nativeCalls[0].url,media.props.media.url);f.plugin.onUnload();
 });
 
@@ -310,12 +316,15 @@ test('native video gestures work with zero ordinary React touch events and prese
  tile.nativeGesture.handlers.down({allTouches:[point(1),point(2)],changedTouches:[point(2)]},manager);
  tile.nativeGesture.handlers.start({numberOfPointers:2});
  await f.tick(450);assert.equal(tile.owner.values[0],true);
- await f.tick(1050);assert.equal(f.nativeCalls.length,1);assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/702/movie.mp4');
+ tile.nativeGesture.handlers.up({allTouches:[point(1),point(2)],changedTouches:[point(2)]},manager);
+ await f.tick(60000);assert.equal(tile.owner.values[0],true);assert.equal(f.nativeCalls.length,0);
+ tile.nativeGesture.handlers.down({allTouches:[point(1),point(2)],changedTouches:[point(2)]},manager);await f.tick(0);
+ assert.equal(f.nativeCalls.length,1);assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/702/movie.mp4');
  tile.nativeGesture.handlers.up({allTouches:[point(1),point(2)],changedTouches:[point(2)]},manager);
  tile.nativeGesture.handlers.up({allTouches:[point(1)],changedTouches:[point(1)]},manager);
  tile.nativeGesture.handlers.finalize({state:5},true);f.plugin.onUnload();assert.equal(f.timers.size,0);
 });
-test('native video input rejects cross-tile touches and cancels when a finger lifts early',async()=>{
+test('native video input rejects cross-tile touches and keeps the URL visible without downloading after one finger lifts',async()=>{
  const f=fixture({nativeGestures:true,nativeDownload:true});f.plugin.onLoad();
  const media=f.React.createElement('VideoPlayer',{source:{uri:'https://cdn.discordapp.com/attachments/100/703/a.mp4'},style:{width:100,height:100}}),tile=f.mountWrapped(media);
  const manager={begin(){throw Error('No JS state bridge');},activate(){throw Error('No JS state bridge');},end(){throw Error('No JS state bridge');},fail(){throw Error('No JS state bridge');}};
@@ -324,15 +333,25 @@ test('native video input rejects cross-tile touches and cancels when a finger li
  tile.nativeGesture.handlers.cancel();
  const allTouches=[{id:1,absoluteX:10,absoluteY:10},{id:2,absoluteX:20,absoluteY:10}];
  tile.nativeGesture.handlers.down({allTouches},manager);await f.tick(450);
- tile.nativeGesture.handlers.up({allTouches,changedTouches:[allTouches[1]]},manager);await f.tick(1500);
- assert.equal(f.nativeCalls.length,0);f.plugin.onUnload();
+ tile.nativeGesture.handlers.up({allTouches,changedTouches:[allTouches[1]]},manager);await f.tick(60000);
+ assert.equal(tile.owner.values[0],true);assert.equal(f.nativeCalls.length,0);f.plugin.onUnload();
 });
 
-test('native video cancellation stops both hold timers without a JS state manager',async()=>{
+test('native video cancellation closes the URL and cancels pending work without a JS state manager',async()=>{
  const f=fixture({nativeGestures:true,nativeDownload:true});f.plugin.onLoad();
  const media=f.React.createElement('VideoPlayer',{source:{uri:'https://cdn.discordapp.com/attachments/100/704/a.mp4'},style:{width:100,height:100}}),tile=f.mountWrapped(media);
  tile.nativeGesture.handlers.down({allTouches:[{id:1,absoluteX:10,absoluteY:10},{id:2,absoluteX:20,absoluteY:10}]});
  tile.nativeGesture.handlers.start({numberOfPointers:2});await f.tick(450);assert.equal(tile.owner.values[0],true);
  tile.nativeGesture.handlers.finalize({state:3},false);await f.tick(1500);
  assert.equal(tile.owner.values[0],false);assert.equal(f.nativeCalls.length,0);f.plugin.onUnload();assert.equal(f.timers.size,0);
+});
+
+test('one-finger reading keeps Discord menus suppressed and ends when both fingers lift',async()=>{
+ const f=fixture({nativeDownload:true});f.plugin.onLoad();const tile=f.mount(101);
+ tile.view.props.onTouchStart(tile.event([10,20]));await f.tick(450);
+ tile.view.props.onTouchEnd(tile.event([10]));await f.tick(60000);
+ assert.equal(tile.owner.values[0],true);assert.match(tile.owner.values[2],/second finger back/);
+ assert.equal(f.sheets.openLazy('lazy','message-menu',{}),undefined);assert.equal(f.nativeCalls.length,0);
+ tile.view.props.onTouchEnd(tile.event([]));await f.tick(0);
+ assert.equal(tile.owner.values[0],false);assert.equal(f.sheets.openLazy('normal','message-menu',{}),'opened');f.plugin.onUnload();
 });

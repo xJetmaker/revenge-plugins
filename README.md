@@ -1,15 +1,15 @@
 # Media Gestures for classic Revenge
 
-Version 0.1.12 — device-test build.
+Version 0.1.13 — device-test build.
 Target: Revenge `1b1d297-main` (1.11.6), Discord Android 347.12 (347012).
-The plugin API was checked against the exact Revenge source commit `1b1d297416594087769987908e5fc09af36b7e6e`. The Discord application itself is not available in this workspace, so native component interception, touch delivery, and gallery permission behavior are NOT yet verified on a real phone.
+The plugin API was checked against the exact Revenge source commit `1b1d297416594087769987908e5fc09af36b7e6e`. The Discord application itself is not available in this workspace, so native component interception, touch delivery, and gallery permission behavior require device testing. The user confirmed image/video gestures and native downloading work with version 0.1.12; version 0.1.13 changes the control sequence.
 
 ## Behavior
 
-- Hold **two fingers** on one attachment for **450 ms**: a temporary, noninteractive URL tooltip appears on that media. Lift a finger to hide it. There is no copy button or clipboard access.
-- Keep the same **two fingers** held for **1.5 seconds total**: download that attachment once using Discord’s native downloader, or the CameraRoll fallback when available.
-- Lift either finger before 1.5 seconds to only view the URL. A third finger cancels; it no longer starts a download.
-- All fingers must be inside the same physical media tile. Fingers on neighbouring tiles, more than two fingers, replacing a finger, scrolling, or moving more than 12 logical pixels cancel the gesture. Lift all fingers before trying again.
+- Hold **two fingers** on one attachment for **450 ms** to show its URL. There is no copy button or clipboard access.
+- Lift either finger after the URL appears. Keep the remaining finger still on that tile to read indefinitely.
+- Put a second finger back on the same tile to download once. Holding two fingers continuously never downloads automatically.
+- Lift both fingers to close the URL. A third finger, moving more than 12 logical pixels, leaving the tile, or replacing the anchor cancels. Lifting before the URL appears also cancels.
 - Batch messages are handled per rendered image/video, using that element's own source URI. No message-wide hitbox, invisible padding, nearest-tile selection, or first-attachment fallback is used. Screen bounds are remeasured during every touch update because scrolling does not necessarily trigger layout events.
 - Native image taps and one-finger holds are left to Discord. Existing gallery/video pinch gestures use the same fingers and may conflict; verify those on your device.
 
@@ -42,7 +42,7 @@ Start with an ordinary uploaded image, then a batch of two images with visibly d
 - Open the plugin's settings and check Image hook, Discord downloader, menu guards, and Inline video hook. File manager/Gallery saving describe the fallback only.
 - Hold two fingers on the second image. The URL must belong to that second attachment. Release and confirm it disappears.
 - Scroll and repeat, then touch across two neighbouring tiles. The cross-tile gesture must do nothing.
-- Hold two fingers for 1.5 seconds on a small test image. Confirm exactly one file appears in Downloads or the gallery.
+- Hold two fingers until the URL appears, lift one finger and read, then return it to the tile. Confirm exactly one file appears in Downloads or the gallery.
 - Try a video thumbnail. Check that it saves the video rather than a frame.
 - Check normal single taps/long presses, disable the plugin, and check them again.
 
@@ -86,3 +86,5 @@ Version 0.1.10 separates gesture layout/source metadata from the player’s prop
 Version 0.1.11 adds a video-only React Native Gesture Handler Manual gesture/Detector listener. This addresses wrapped video children receiving zero React touch events on the target phone. Native touch coordinates are checked against the measured media box, two fingers activate the hold, and lifting/moving/termination cancels it. Images retain their existing input path. Settings report native video gesture API availability. Native touch handling still requires target-device confirmation.
 
 Version 0.1.12 replaces manual JS state-manager calls with native LongPress recognition configured for exactly two pointers and zero activation delay. URL/download timing remains in the validated per-tile controller (450/1500 ms). Single-pointer input cannot activate this recognizer. Settings preserve the hold/cancellation reason and report the maximum pointer count and native recognition state. Native behavior still needs confirmation on the phone.
+
+Version 0.1.13 keeps the URL visible after one finger lifts and downloads on a second finger returning to the same tile. It removes the automatic 1.5-second download timer. Either original finger can anchor the URL, menus stay suppressed during reading, and each continuous gesture downloads at most once. The working native video recognizer stays active while one finger remains down.
