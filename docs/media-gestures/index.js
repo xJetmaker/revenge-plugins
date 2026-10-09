@@ -81,6 +81,7 @@ return {mediaFromSource,inside,createGesture,base64};
 const {mediaFromSource,createGesture,base64}=core;
 const {React,RN}= {React:vendetta.metro.common.React,RN:vendetta.metro.common.ReactNative};
 const create=React.createElement.bind(React),unpatches=[],instances=new Set(),inFlight=new Set(),controllers=new Set(),touchSessions=new Set(),functionMedia=new Set(),longPressGuards=new WeakMap();
+const mediaContext=React.createContext(false);
 let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null,menuGuard=false,pressabilityGuard=false;
 const notify=message=>{try{vendetta.ui.toasts.showToast(message);}catch(error){vendetta.logger?.warn?.('Media Gestures toast unavailable: '+String(error));}};
 function startupError(error) {
@@ -227,15 +228,18 @@ function guardLongPress(element) {
   return React.cloneElement(element,{onLongPress:guarded});
 }
 function MediaBox({element,media}) {
+  const nested=React.useContext(mediaContext);
   const ref=React.useRef(null),rect=React.useRef(null),gesture=React.useRef(null),eventVersion=React.useRef(0),alive=React.useRef(true),[visible,setVisible]=React.useState(false),[revision,setRevision]=React.useState(0),[feedback,setFeedback]=React.useState(null);
   const session=React.useRef({blocked:false,owned:false,targets:new Set(),rect:null,releaseTimer:null});
   const resetSession=()=>{clearTimeout(session.current.releaseTimer);session.current.blocked=false;session.current.owned=false;session.current.targets.clear();touchSessions.delete(session.current);};
   const measured=()=>ref.current?.measureInWindow((x,y,width,height)=>{rect.current={x,y,width,height};session.current.rect=rect.current;});
   React.useEffect(()=>{
+    if(nested)return;
     const state={clear(){resetSession();eventVersion.current++;gesture.current?.cancel();setVisible(false);setFeedback(null);setRevision(value=>value+1);}};instances.add(state);
     return ()=>{resetSession();alive.current=false;eventVersion.current++;instances.delete(state);gesture.current?.cancel();};
   },[]);
   React.useEffect(()=>{
+    if(nested)return;
     resetSession();gesture.current?.cancel();
     gesture.current=createGesture({getRect:()=>rect.current,show:()=>{if(enabled && alive.current)setVisible(true);},hide:()=>{if(alive.current)setVisible(false);},download:()=>download(media,message=>{if(enabled && alive.current)setFeedback(message);}),
       onState:state=>{
@@ -279,8 +283,8 @@ function MediaBox({element,media}) {
   const {outer,inner}=splitStyle(element.props.style);
   const clone=React.cloneElement(element,{style:inner});
   // There is no hitSlop or message-sized gesture surface: only this media's physical box.
-  if(!enabled)return element;
-  return create(RN.View,{
+  if(!enabled || nested)return element;
+  return create(mediaContext.Provider,{value:true},create(RN.View,{
     ref,collapsable:false,style:outer,onLayout:measured,
     onTouchStart:feed,onTouchMove:feed,onTouchEnd:feed,onTouchCancel:cancel,
     onStartShouldSetResponderCapture:capture,onMoveShouldSetResponderCapture:capture,
@@ -288,7 +292,7 @@ function MediaBox({element,media}) {
     onResponderRelease:feed,onResponderTerminate:cancel,
     onResponderTerminationRequest:()=>!(gesture.current?.claimed()),
   },clone,(visible || feedback)?create(RN.View,{pointerEvents:'none',style:{position:'absolute',top:0,left:0,right:0,zIndex:999,elevation:8,padding:7,backgroundColor:'rgba(15,17,22,0.94)',borderRadius:6}},
-    create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},visible?media.url+(feedback?"\n"+feedback:""):(feedback || media.url))):null);
+    create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},visible?media.url+(feedback?"\n"+feedback:""):(feedback || media.url))):null));
 }
 function wrap(element,source) {
   if(!enabled || !React.isValidElement(element))return element;
@@ -299,6 +303,47 @@ function wrap(element,source) {
   if(!(style.width || style.flex || style.flexGrow) || !(style.height || style.aspectRatio || style.flex || style.flexGrow))return element;
   return create(MediaBox,{element,media,key:element.key});
 }
+function videoSource(props) {
+  const source=props?.src || props?.source;
+  if(!source || Array.isArray(source))return source;
+  // Prefer the original video over its poster or converted thumbnail.
+  return source.videoURI || source.sourceURI || source;
+}
+function wrapVideo(element) {
+  const props=element?.props;
+  if(!props)return element;
+  const style=RN.StyleSheet.flatten(props.style)||{};
+  const dimensions={};
+  if(style.width==null && Number.isFinite(props.width) && props.width>0)dimensions.width=props.width;
+  if(style.height==null && Number.isFinite(props.height) && props.height>0)dimensions.height=props.height;
+  const media=mediaFromSource(videoSource(props));
+  // Only original video attachments: no avatars, posters or camera streams.
+  if(!media?.video)return element;
+  const original=Object.keys(dimensions).length?React.cloneElement(element,{style:[dimensions,props.style]}):element;
+  return wrap(original,media.url);
+}
+function discoverVideos() {
+  const candidates=new Set();
+  try {
+    const module=vendetta.metro.findByName('Video',false);
+    if(module){candidates.add(module.default || module.Video || module);}
+  }catch(_){}
+  for(const name of ['Video','VideoComponent']) {
+    try {const component=vendetta.metro.findByName(name);if(component)candidates.add(component.default || component);}catch(_){}
+    try {for(const component of vendetta.metro.findByDisplayNameAll?.(name) || [])candidates.add(component);}catch(_){}
+  }
+  for(const candidate of [...candidates]) {
+    if(typeof candidate?.VideoComponent==='function')candidates.add(candidate.VideoComponent);
+  }
+  for(const component of candidates) {
+    if(component===RN.Image)continue;
+    if(typeof component==='function' || (component && (typeof component.render==='function' || component.type))) {
+      functionMedia.add(component);videoPatched=true;
+    }
+  }
+  videoComponents.clear();for(const candidate of candidates)if(functionMedia.has(candidate))videoComponents.add(candidate);
+}
+const videoComponents=new Set();
 function patchForward(component) {
   const seen=new Set();
   // Image may be memo(forwardRef(...)); the outer memo has .type, not .render.
@@ -322,7 +367,7 @@ function patchFactories() {
       unpatches.push(vendetta.patcher.after(name,holder,(args,result)=>{
         if(!enabled || !React.isValidElement(result))return result;
         const element=guardLongPress(result);
-        return functionMedia.has(element.type)?wrap(element,element.props?.source):element;
+        return videoComponents.has(element.type)?wrapVideo(element):functionMedia.has(element.type)?wrap(element,element.props?.source):element;
       }));count++;
     }catch(_){}
   }
@@ -338,19 +383,14 @@ function onLoad() {
   patchMenuGuards();
   if(!patchFactories())throw Error('React element factories are unavailable');
   if(!patchForward(RN.Image) && !patchFunction(RN.Image))throw Error('No supported Image render hook. Image type: '+typeof RN.Image+'; fields: '+Object.keys(RN.Image || {}).join(', '));
-  // React Native Video commonly exports a forwardRef. Never guess an array index or an internal save function.
-  try {
-    const module=vendetta.metro.findByName('Video',false);
-    const video=module?.default || module?.Video;
-    if(video && video!==RN.Image)videoPatched=patchForward(video) || patchFunction(video);
-  }catch(_){}
+  discoverVideos();
   appStateSubscription=RN.AppState?.addEventListener('change',state=>{if(state!=='active')for(const item of instances)item.clear();});
   notify('Media Gestures: hold two fingers for URL; keep holding 1.5 seconds to download. Reload to attach to existing media.');
   try {delete vendetta.plugin.storage.lastStartupError;}catch(_){}
   } catch(error) {onUnload();startupError(error);throw error;}
 }
 function onUnload() {
-  enabled=false;menuGuard=false;pressabilityGuard=false;functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
+  enabled=false;menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
   for(const item of instances)item.clear();
 }
 function settings() {

@@ -1,6 +1,6 @@
 # Media Gestures for classic Revenge
 
-Version 0.1.6 — device-test build.
+Version 0.1.7 — device-test build.
 Target: Revenge `1b1d297-main` (1.11.6), Discord Android 347.12 (347012).
 The plugin API was checked against the exact Revenge source commit `1b1d297416594087769987908e5fc09af36b7e6e`. The Discord application itself is not available in this workspace, so native component interception, touch delivery, and gallery permission behavior are NOT yet verified on a real phone.
 
@@ -15,7 +15,7 @@ The plugin API was checked against the exact Revenge source commit `1b1d29741659
 
 ## Supported media and constraints
 
-Direct Discord CDN image attachments (PNG/JPEG/GIF/WebP/AVIF) and video attachment thumbnails (MP4/MOV/WebM) are recognized. External embeds, avatars, stickers, ambiguous source arrays, and views whose layout dimensions cannot be safely preserved are skipped. Video thumbnails whose URL points to the original video will download the video, not the thumbnail conversion. Inline video support also tries a forward-ref Video component, but whether this hook is present depends on the Discord bundle; it is reported in plugin settings.
+Direct Discord CDN image attachments (PNG/JPEG/GIF/WebP/AVIF) and video attachment thumbnails (MP4/MOV/WebM) are recognized. External embeds, avatars, stickers, ambiguous source arrays, and views whose layout dimensions cannot be safely preserved are skipped. Video thumbnails whose URL points to the original video will download the video, not the thumbnail conversion. Video support discovers class, function, memo and forward-ref Video/VideoComponent exports, accepts src.videoURI/sourceURI and separate width/height props, and prefers the original video over the poster. Detection is reported in plugin settings. Nested wrappers share a context so only the outer media tile handles gestures.
 
 Image/video sources must use `cdn.discordapp.com/attachments/...` or `media.discordapp.net/attachments/...`. Only thumbnail conversion query parameters are removed; attachment signature/expiry parameters are preserved. Expired links produce an error; the plugin does not guess a replacement URL.
 
@@ -74,3 +74,5 @@ Version 0.1.4 handles responder start/end events so a third finger can upgrade a
 Version 0.1.5 guards the Discord action-sheet openLazy entry point during a validated multi-finger media hold, including menu opens that provide no touch event. It also guards existing React Native Pressability instances when discoverable. The guards restore on disable; single-finger holds and touches split across media tiles do not activate the action-sheet guard. Plugin settings report which guards were detected.
 
 Version 0.1.6 replaces three-finger downloads with a 1.5-second two-finger hold (URL at 450 ms). It prefers Discord’s MediaManager native downloader; CameraRoll is now a fallback. Calling conventions were checked against [FileContentPreview](https://github.com/fres621/vendetta-plugins/blob/master/plugins/FileContentPreview/src/ui/FCButtons.tsx) and [Stealmoji](https://github.com/aliernfrog/vd-plugins/blob/main/plugins/Stealmoji/ui/components/StealButtons.tsx).
+
+Version 0.1.7 expands real video component support and original URL/dimension handling. Video component interception still needs confirmation on the target phone.

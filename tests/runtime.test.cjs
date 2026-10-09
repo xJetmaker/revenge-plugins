@@ -1,7 +1,8 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,functionImage=false,nativeDownload=false,nativeResult=true,nativeFailure=false,nativeVoid=false}={}) {
+function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,functionImage=false,nativeDownload=false,nativeResult=true,nativeFailure=false,nativeVoid=false,videoShape=null}={}) {
  let active=null,seq=0,clock=0;const timers=new Map(),patches=[],toasts=[],requests=[],files=[],saves=[],removes=[],alerts=[],nativeCalls=[];
- const React={createElement:(type,props,...children)=>({type,key:props?.key,props:{...props,children}}),cloneElement:(el,props)=>({...el,props:{...el.props,...props}}),isValidElement:el=>!!el?.props,
+ let nestedContext=false;
+ const React={createContext:value=>({Provider:"MediaProvider",value}),useContext:()=>nestedContext,createElement:(type,props,...children)=>({type,key:props?.key,props:{...props,children}}),cloneElement:(el,props)=>({...el,props:{...el.props,...props}}),isValidElement:el=>!!el?.props,
   useRef(value){const ref={current:value};active.refs.push(ref);return ref;},useState(value){const index=active.values.length,owner=active;owner.values.push(value);return[value,next=>owner.values[index]=typeof next==='function'?next(owner.values[index]):next];},
   useEffect(fn){active.effects.push(fn);}};
  const camera={saveToCameraRoll:async(uri,options)=>{saves.push({uri,options});return 'content://saved';}};
@@ -10,22 +11,24 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
  const jsxRuntime={jsx:(type,props,key)=>({type,key,props}),jsxs:(type,props,key)=>({type,key,props})};
  if(functionImage)RN.Image=Object.assign(function Image(props){return React.createElement('NativeImage',props);},{displayName:'Image',getSize(){},getSizeWithHeaders(){},prefetch(){},prefetchWithMetadata(){},abortPrefetch(){},queryCache(){},resolveAssetSource(){}});
  if(memo)RN.Image={type:RN.Image};if(unsupported)RN.Image={};
+ class Video {render(){return React.createElement('NativeVideo',this.props);}}
+ const video=videoShape==='class'?Video:videoShape==='memo'?{type:function VideoComponent(){}}:videoShape==='forward'?{render:props=>React.createElement('NativeVideo',props)}:videoShape==='function'?function VideoComponent(){}:null;
  const sheets={opened:[],openLazy(...args){this.opened.push(args);return 'opened';},hideActionSheet(){}};
  class Pressability {_handleLongPress(event){this.calls=(this.calls || 0)+1;this.event=event;return 'long press';}}
- const vendetta={plugin:{storage:{}},logger:{warn(){}},metro:{common:{React,ReactNative:RN},findByName:name=>name==='Pressability'?Pressability:null,findByProps:(...props)=>props.includes('hideActionSheet')?sheets:null,findByPropsAll:()=>[jsxRuntime]},ui:{toasts:{showToast:m=>{if(brokenToast)throw Error("toast unavailable");toasts.push(m);}}},patcher:{instead(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original.bind(this));};return()=>obj[name]=original;},after(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original(...args));};patches.push([obj,name,original]);return()=>obj[name]=original;}}};
+ const vendetta={plugin:{storage:{}},logger:{warn(){}},metro:{common:{React,ReactNative:RN},findByName:(name,defaultExp=true)=>name==='Pressability'?Pressability:name==='Video'?(defaultExp?video:{default:video}):null,findByProps:(...props)=>props.includes('hideActionSheet')?sheets:null,findByPropsAll:()=>[jsxRuntime]},ui:{toasts:{showToast:m=>{if(brokenToast)throw Error("toast unavailable");toasts.push(m);}}},patcher:{instead(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original.bind(this));};return()=>obj[name]=original;},after(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original(...args));};patches.push([obj,name,original]);return()=>obj[name]=original;}}};
  const context={vendetta,console,Uint8Array,AbortController,fetch:async url=>{requests.push(url);return{ok:true,status:200,headers:{get:n=>n==='content-type'?'image/png':null},arrayBuffer:async()=>Uint8Array.from([0,1,2,3]).buffer};},
   setTimeout:(fn,delay)=>{const id=++seq;timers.set(id,{fn,due:clock+delay});return id;},clearTimeout:id=>timers.delete(id)};
  const plugin=vm.runInNewContext('(vendetta=>'+fs.readFileSync(require.resolve('../docs/media-gestures/index.js'),'utf8')+')(vendetta)',context);
  function mount(id,x=0,jsx=false,extension="png"){
   const props={source:{uri:`https://media.discordapp.net/attachments/100/${id}/image.${extension}?ex=a&hm=b&width=300`},style:{width:100,height:100,marginTop:4}};
   const media=functionImage?(jsx?jsxRuntime.jsx(RN.Image,props):React.createElement(RN.Image,props)):(RN.Image.type || RN.Image).render(props);
-  const owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const view=media.type(media.props);
+  const owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=media.type(media.props),view=rendered.type==="MediaProvider"?rendered.props.children[0]:rendered;
   let currentX=x;owner.refs[0].current={measureInWindow:fn=>fn(currentX,0,100,100)};
   for(const effect of owner.effects){const cleanup=effect();if(cleanup)owner.cleanups.push(cleanup);}
   return{view,owner,scrollTo(value){currentX=value;},event(points){return {nativeEvent:{touches:points.map((point,i)=>({identifier:i+1,target:42,pageX:point,pageY:10}))}};}};
  }
  async function tick(ms){clock+=ms;for(let i=0;i<15;i++){for(const[id,t]of [...timers])if(t.due<=clock){timers.delete(id);t.fn();}await Promise.resolve();}}
- return {plugin,RN,sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
+ return {plugin,RN,video,renderNested(element){nestedContext=true;active={refs:[],values:[],effects:[]};try{return element.type(element.props);}finally{nestedContext=false;}},mountVideo(props,x=0){const element=React.createElement(video,props),owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=element.type(element.props),view=rendered.props.children[0];owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};for(const effect of owner.effects)effect();return {view,owner,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};},sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
 }
 test('packaged plugin downloads the touched batch item once and cleans up its temporary media',async()=>{
  const f=fixture();f.plugin.onLoad();const a=f.mount(101),b=f.mount(102,200);
@@ -198,4 +201,25 @@ test('void native bridge reports a handoff without claiming a confirmed save',as
  const f=fixture({gallery:false,nativeDownload:true,nativeVoid:true});f.plugin.onLoad();const tile=f.mount(101);
  tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
  assert.match(f.storage.lastDownloadStatus,/handed to Discord/);assert.equal(f.alerts.length,0);f.plugin.onUnload();
+});
+
+test('class-based video tiles use src.videoURI and separate dimensions, preserving controls and refs',async()=>{
+ const f=fixture({videoShape:'class',nativeDownload:true,gallery:false});f.plugin.onLoad();const ref={current:null},onPress=()=>{},onLoad=()=>{};
+ const uri='https://media.discordapp.net/attachments/100/202/movie.mp4?ex=a&hm=b&format=jpeg&width=100';
+ const tile=f.mountVideo({src:{uri:'https://cdn.discordapp.com/attachments/100/202/poster.jpg',videoURI:uri},width:100,height:100,paused:true,ref,onPress,onLoad},200);
+ const clone=tile.view.props.children[0];assert.equal(clone.type,f.video);assert.equal(clone.props.ref,ref);assert.equal(clone.props.onPress,onPress);assert.equal(clone.props.onLoad,onLoad);assert.equal(clone.props.paused,true);
+ tile.view.props.onResponderStart(tile.event([210,220]));await f.tick(450);assert.equal(tile.owner.values[0],true);await f.tick(1050);
+ assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/202/movie.mp4?ex=a&hm=b');assert.equal(f.nativeCalls.length,1);f.plugin.onUnload();
+});
+test('function, memo and forward-ref video components are intercepted without calling them outside React',async()=>{
+ for(const videoShape of ['function','memo','forward']) {
+  const f=fixture({videoShape,nativeDownload:true});f.plugin.onLoad();const tile=f.mountVideo({source:{uri:'https://cdn.discordapp.com/attachments/100/203/a.webm'},style:{width:100,height:100}});
+  tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/203/a.webm');f.plugin.onUnload();
+ }
+});
+test('video poster-only and external sources are skipped, and nested media wrappers cannot duplicate downloads',()=>{
+ const f=fixture({videoShape:'class',functionImage:true});f.plugin.onLoad();
+ for(const src of [{uri:'https://cdn.discordapp.com/attachments/100/202/poster.jpg'},{videoURI:'https://example.com/a.mp4',uri:'https://cdn.discordapp.com/attachments/100/202/poster.jpg'}])assert.equal(f.React.createElement(f.video,{src,width:100,height:100}).type,f.video);
+ const original=f.React.createElement(f.RN.Image,{source:{uri:'https://cdn.discordapp.com/attachments/100/202/a.mp4'},style:{width:100,height:100}});
+ assert.equal(f.renderNested(original),original.props.element);f.plugin.onUnload();
 });
