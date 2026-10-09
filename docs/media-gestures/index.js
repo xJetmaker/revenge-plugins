@@ -83,6 +83,7 @@ const {React,RN}= {React:vendetta.metro.common.React,RN:vendetta.metro.common.Re
 const create=React.createElement.bind(React),unpatches=[],instances=new Set(),inFlight=new Set(),controllers=new Set(),touchSessions=new Set(),functionMedia=new Set(),longPressGuards=new WeakMap();
 const mediaContext=React.createContext(false);
 const videoDiagnostics=new Map();
+const videoTrace={calls:0,wrapped:0,touches:0,last:"Open a full-screen video first"};
 let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null,menuGuard=false,pressabilityGuard=false;
 const notify=message=>{try{vendetta.ui.toasts.showToast(message);}catch(error){vendetta.logger?.warn?.('Media Gestures toast unavailable: '+String(error));}};
 function startupError(error) {
@@ -228,7 +229,7 @@ function guardLongPress(element) {
   }
   return React.cloneElement(element,{onLongPress:guarded});
 }
-function MediaBox({element,media}) {
+function MediaBox({element,media,layoutStyle}) {
   const nested=React.useContext(mediaContext);
   const ref=React.useRef(null),rect=React.useRef(null),gesture=React.useRef(null),eventVersion=React.useRef(0),alive=React.useRef(true),[visible,setVisible]=React.useState(false),[revision,setRevision]=React.useState(0),[feedback,setFeedback]=React.useState(null);
   const session=React.useRef({blocked:false,owned:false,targets:new Set(),rect:null,releaseTimer:null});
@@ -255,6 +256,7 @@ function MediaBox({element,media}) {
   const cancel=()=>{resetSession();eventVersion.current++;gesture.current?.cancel();};
   const feed=event=>{
     if(!enabled)return;
+    if(media.video){videoTrace.touches++;videoTrace.last="Video received "+(event.nativeEvent?.touches?.length || 0)+" touches";}
     const touches=Array.from(event.nativeEvent?.touches || [],t=>({identifier:t.identifier,pageX:t.pageX,pageY:t.pageY,target:t.target}));
     // Latch suppression as soon as a second finger arrives, before asynchronous measurement.
     clearTimeout(session.current.releaseTimer);
@@ -285,7 +287,7 @@ function MediaBox({element,media}) {
     } else if(touches.some(t=>t.target!==touches[0].target))return false;
     feed(event);return true;
   };
-  const {outer,inner}=splitStyle(element.props.style);
+  const {outer,inner}=splitStyle(layoutStyle ?? element.props.style);
   const clone=React.cloneElement(element,{style:inner});
   // There is no hitSlop or message-sized gesture surface: only this media's physical box.
   if(!enabled || nested)return element;
@@ -299,17 +301,17 @@ function MediaBox({element,media}) {
   },clone,(visible || feedback)?create(RN.View,{pointerEvents:'none',style:{position:'absolute',top:0,left:0,right:0,zIndex:999,elevation:8,padding:7,backgroundColor:'rgba(15,17,22,0.94)',borderRadius:6}},
     create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},visible?media.url+(feedback?"\n"+feedback:""):(feedback || media.url))):null));
 }
-function wrap(element,source) {
+function wrap(element,source,layoutStyle=element?.props?.style) {
   if(!enabled || !React.isValidElement(element))return element;
   const media=mediaFromSource(source);
   if(!media)return element;
   // Zero-sized or intrinsic-sized views cannot safely become wrapper boxes.
-  const style=RN.StyleSheet.flatten(element.props.style)||{};
+  const style=RN.StyleSheet.flatten(layoutStyle)||{};
   const stretched=style.position==='absolute';
   const width=style.width || style.flex || style.flexGrow || (stretched && style.left!=null && style.right!=null);
   const height=style.height || style.aspectRatio || style.flex || style.flexGrow || (stretched && style.top!=null && style.bottom!=null);
   if(!width || !height)return element;
-  return create(MediaBox,{element,media,key:element.key});
+  return create(MediaBox,{element,media,layoutStyle,key:element.key});
 }
 function videoSource(props) {
   const source=props?.src || props?.source || props?.videoURI;
@@ -380,16 +382,26 @@ function guardVideoPresenter(element) {
   // Wrap there, never around the window-sized presenter or overlay controls.
   const guarded=function(...args) {
     const rendered=renderMedia.apply(this,args);
-    if(!enabled || !React.isValidElement(rendered))return rendered;
-    const tile=args[0];
-    if(!tile?.source || !mediaFromSource(videoSource(tile))?.video)return rendered;
-    const candidate=React.cloneElement(rendered,{
-      source:rendered.props.source || tile.source,
-      style:rendered.props.style || tile.style,
-    });
-    return wrapVideo(candidate);
+    if(!enabled)return rendered;
+    videoTrace.calls++;
+    if(!React.isValidElement(rendered)){videoTrace.last='renderMedia returned no React element';return rendered;}
+    const tile=args[0],media=mediaFromSource(videoSource(tile));
+    if(!media?.video) {
+      videoTrace.last='Callback source is not an original video; argument keys: '+Object.keys(tile || {}).slice(0,12).join(', ');
+      return rendered;
+    }
+    // The callback owns the actual media-box layout and original source.
+    // A player may instead expose an empty style and a poster-only source.
+    // Keep the player's source intact; give only the gesture wrapper the URL.
+    const layout=[rendered.props.style,tile.style];
+    const wrapped=wrap(rendered,media.url,layout);
+    if(wrapped===rendered) {
+      const style=RN.StyleSheet.flatten(layout)||{};
+      videoTrace.last='Callback ran but layout is missing; style keys: '+Object.keys(style).join(', ');
+    } else {videoTrace.wrapped++;videoTrace.last='Video child wrapped; waiting for touch events';}
+    return wrapped;
   };
-  videoDiagnostics.set('MediaViewerItemPresenter',{wrapped:true,props:'renderMedia callback attached to the sized media child'});
+  videoDiagnostics.set('MediaViewerItemPresenter',{status:'callback attached',props:'renderMedia interception installed'});
   return React.cloneElement(element,{renderMedia:guarded});
 }
 function patchFactories() {
@@ -431,14 +443,14 @@ function onLoad() {
   } catch(error) {onUnload();startupError(error);throw error;}
 }
 function onUnload() {
-  enabled=false;videoDiagnostics.clear();menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
+  enabled=false;videoTrace.calls=0;videoTrace.wrapped=0;videoTrace.touches=0;videoTrace.last="Open a full-screen video first";videoDiagnostics.clear();menuGuard=false;pressabilityGuard=false;videoComponents.clear();functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
   for(const item of instances)item.clear();
 }
 function settings() {
   return create(RN.ScrollView,{contentContainerStyle:{padding:20}},
     create(RN.Text,{style:{color:'#fff',fontSize:20,fontWeight:'600',marginBottom:16}},'Media Gestures'),
     create(RN.Text,{style:{color:'#b8bbc4',fontSize:14,lineHeight:22}},
-      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.wrapped?'wrapped':'missing layout')+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
+      'Two fingers: the URL appears after 0.45 seconds. Lift either finger before 1.5 seconds to only view the URL.\n\nKeep both fingers still for 1.5 seconds total to download once. Both must touch the same media tile. Moving cancels.\n\nUses Discord’s native downloader when available; check Downloads or your gallery. At most two requests at once. The CameraRoll fallback has a 32 MB limit. Storage permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nVideo tiles seen: '+(videoDiagnostics.size?[...videoDiagnostics].map(([type,details])=>type+': '+(details.status || (details.wrapped?'wrapped':'missing layout'))+' ['+details.props+']').join('\n'):'none yet — open a video first')+'\nFull-screen callback calls: '+videoTrace.calls+'\nFull-screen children wrapped: '+videoTrace.wrapped+'\nVideo touch events: '+videoTrace.touches+'\nVideo detail: '+videoTrace.last+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nDiscord downloader: '+(discordDownloader()?'available':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
 }
 return {onLoad,onUnload,settings};
 

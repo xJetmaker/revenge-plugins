@@ -277,3 +277,15 @@ test('presenter callback uses each rendered tile source and does not pick from w
  const props={source:[{uri:'https://cdn.discordapp.com/attachments/100/501/movie.mp4'},{uri:'https://cdn.discordapp.com/attachments/100/502/movie.mp4'}],style:{width:'100%',height:'100%'}};
  assert.equal(presenter.props.renderMedia(props).type,'VideoRenderer');f.plugin.onUnload();
 });
+
+test('presenter callback layout and video URL override empty style and poster metadata only for gestures',async()=>{
+ const f=fixture({nativeDownload:true}),cached=f.jsxRuntime.jsx;f.plugin.onLoad();function MediaViewerItemPresenter(){}
+ const poster={uri:'https://cdn.discordapp.com/attachments/100/602/poster.jpg'};
+ const callback=()=>cached('VideoRenderer',{source:poster,style:{},paused:false});
+ const presenter=f.React.createElement(MediaViewerItemPresenter,{source:{},renderMedia:callback});
+ const media=presenter.props.renderMedia({source:{videoURI:'https://cdn.discordapp.com/attachments/100/602/movie.mp4'},style:{width:'100%',height:'100%'}});
+ assert.equal(media.props.media.url,'https://cdn.discordapp.com/attachments/100/602/movie.mp4');
+ assert.equal(media.props.element.props.source,poster);assert.deepEqual(media.props.element.props.style,{});
+ const tile=f.mountWrapped(media);tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
+ assert.equal(f.nativeCalls.length,1);assert.equal(f.nativeCalls[0].url,media.props.media.url);f.plugin.onUnload();
+});
