@@ -1,7 +1,7 @@
 "use strict";
 const {mediaFromSource,createGesture,base64}=core;
 const {React,RN}= {React:vendetta.metro.common.React,RN:vendetta.metro.common.ReactNative};
-const create=React.createElement.bind(React),unpatches=[],instances=new Set(),inFlight=new Set(),controllers=new Set();
+const create=React.createElement.bind(React),unpatches=[],instances=new Set(),inFlight=new Set(),controllers=new Set(),touchSessions=new Set(),functionMedia=new Set(),longPressGuards=new WeakMap();
 let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null;
 const notify=message=>{try{vendetta.ui.toasts.showToast(message);}catch(error){vendetta.logger?.warn?.('Media Gestures toast unavailable: '+String(error));}};
 function startupError(error) {
@@ -65,28 +65,61 @@ function splitStyle(style) {
   for(const key of Object.keys(flat))(layoutKeys.has(key)?outer:inner)[key]=flat[key];
   return {outer,inner:[inner,{position:'absolute',top:0,left:0,width:'100%',height:'100%'}]};
 }
+function blockLongPress(event) {
+  if(!enabled)return false;
+  const nativeEvent=event?.nativeEvent;
+  if(nativeEvent?.touches?.length>1)return true;
+  const point=nativeEvent?.touches?.[0] || nativeEvent;
+  return [...touchSessions].some(session=>session.blocked && (
+    (point?.target!=null && session.targets.has(point.target)) ||
+    (session.rect && point?.pageX>=session.rect.x && point.pageX<session.rect.x+session.rect.width &&
+      point?.pageY>=session.rect.y && point.pageY<session.rect.y+session.rect.height)));
+}
+function guardLongPress(element) {
+  const callback=element?.props?.onLongPress;
+  if(typeof callback!=='function')return element;
+  let guarded=longPressGuards.get(callback);
+  if(!guarded) {
+    guarded=function(...args){if(!blockLongPress(args[0]))return callback.apply(this,args);};
+    longPressGuards.set(callback,guarded);longPressGuards.set(guarded,guarded);
+  }
+  return React.cloneElement(element,{onLongPress:guarded});
+}
 function MediaBox({element,media}) {
   const ref=React.useRef(null),rect=React.useRef(null),gesture=React.useRef(null),eventVersion=React.useRef(0),alive=React.useRef(true),[visible,setVisible]=React.useState(false),[revision,setRevision]=React.useState(0);
-  const measured=()=>ref.current?.measureInWindow((x,y,width,height)=>{rect.current={x,y,width,height};});
+  const session=React.useRef({blocked:false,targets:new Set(),rect:null,releaseTimer:null});
+  const resetSession=()=>{clearTimeout(session.current.releaseTimer);session.current.blocked=false;session.current.targets.clear();touchSessions.delete(session.current);};
+  const measured=()=>ref.current?.measureInWindow((x,y,width,height)=>{rect.current={x,y,width,height};session.current.rect=rect.current;});
   React.useEffect(()=>{
-    const state={clear(){eventVersion.current++;gesture.current?.cancel();setVisible(false);setRevision(value=>value+1);}};instances.add(state);
-    return ()=>{alive.current=false;eventVersion.current++;instances.delete(state);gesture.current?.cancel();};
+    const state={clear(){resetSession();eventVersion.current++;gesture.current?.cancel();setVisible(false);setRevision(value=>value+1);}};instances.add(state);
+    return ()=>{resetSession();alive.current=false;eventVersion.current++;instances.delete(state);gesture.current?.cancel();};
   },[]);
   React.useEffect(()=>{
-    gesture.current?.cancel();
+    resetSession();gesture.current?.cancel();
     gesture.current=createGesture({getRect:()=>rect.current,show:()=>{if(enabled && alive.current)setVisible(true);},hide:()=>{if(alive.current)setVisible(false);},download:()=>download(media)});
     return ()=>gesture.current?.cancel();
   },[media.key,media.url]);
-  const cancel=()=>{eventVersion.current++;gesture.current?.cancel();};
+  const cancel=()=>{resetSession();eventVersion.current++;gesture.current?.cancel();};
   const feed=event=>{
     if(!enabled)return;
     const touches=Array.from(event.nativeEvent?.touches || [],t=>({identifier:t.identifier,pageX:t.pageX,pageY:t.pageY,target:t.target}));
+    // Latch suppression as soon as a second finger arrives, before asynchronous measurement.
+    clearTimeout(session.current.releaseTimer);
+    if(touches.length>1) {
+      session.current.blocked=true;touchSessions.add(session.current);
+      for(const touch of touches)session.current.targets.add(touch.target);
+    }
+    if(session.current.blocked && touches.length)event.stopPropagation?.();
     const version=++eventVersion.current;
-    if(!touches.length){gesture.current?.feed([]);return;}
+    if(!touches.length){
+      gesture.current?.feed([]);
+      // Keep the latch through release callbacks in this dispatch, then reset.
+      session.current.releaseTimer=setTimeout(resetSession,0);return;
+    }
     // Scrolling does not fire onLayout. Remeasure for every touch update; never reuse an old screen rectangle.
     ref.current?.measureInWindow((x,y,width,height)=>{
       if(!alive.current || !enabled || version!==eventVersion.current)return;
-      rect.current={x,y,width,height};gesture.current?.feed(touches);
+      rect.current={x,y,width,height};session.current.rect=rect.current;gesture.current?.feed(touches);
     });
   };
   const capture=event=>{
@@ -104,7 +137,7 @@ function MediaBox({element,media}) {
     onTouchStart:feed,onTouchMove:feed,onTouchEnd:feed,onTouchCancel:cancel,
     onStartShouldSetResponderCapture:capture,onMoveShouldSetResponderCapture:capture,
     onResponderGrant:feed,onResponderMove:feed,
-    onResponderRelease:cancel,onResponderTerminate:cancel,
+    onResponderRelease:feed,onResponderTerminate:cancel,
     onResponderTerminationRequest:()=>!(gesture.current?.claimed()),
   },clone,visible?create(RN.View,{pointerEvents:'none',style:{position:'absolute',top:0,left:0,right:0,zIndex:999,elevation:8,padding:7,backgroundColor:'rgba(15,17,22,0.94)',borderRadius:6}},
     create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},media.url)):null);
@@ -131,24 +164,30 @@ function patchForward(component) {
 }
 // Function components have no mutable render method. Intercept their elements,
 // preserving the original component, refs and React's hook execution.
-function patchFunction(component) {
-  if(typeof component!=='function')return false;
+function patchFactories() {
   const holders=new Set([React]);
   try {for(const runtime of vendetta.metro.findByPropsAll?.('jsx','jsxs') || [])holders.add(runtime);}catch(_){}
   let count=0;
   for(const holder of holders)for(const name of ['createElement','jsx','jsxs','jsxDEV']) {
     if(typeof holder?.[name]!=='function')continue;
     try {
-      unpatches.push(vendetta.patcher.after(name,holder,(args,element)=>
-        element?.type===component?wrap(element,element.props?.source):element));
-      count++;
+      unpatches.push(vendetta.patcher.after(name,holder,(args,result)=>{
+        if(!enabled || !React.isValidElement(result))return result;
+        const element=guardLongPress(result);
+        return functionMedia.has(element.type)?wrap(element,element.props?.source):element;
+      }));count++;
     }catch(_){}
   }
   return count>0;
 }
+function patchFunction(component) {
+  if(typeof component!=='function')return false;
+  functionMedia.add(component);return true;
+}
 function onLoad() {
   if(enabled)return;enabled=true;
   try {
+  if(!patchFactories())throw Error('React element factories are unavailable');
   if(!patchForward(RN.Image) && !patchFunction(RN.Image))throw Error('No supported Image render hook. Image type: '+typeof RN.Image+'; fields: '+Object.keys(RN.Image || {}).join(', '));
   // React Native Video commonly exports a forwardRef. Never guess an array index or an internal save function.
   try {
@@ -162,7 +201,7 @@ function onLoad() {
   } catch(error) {onUnload();startupError(error);throw error;}
 }
 function onUnload() {
-  enabled=false;appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
+  enabled=false;functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
   for(const item of instances)item.clear();
 }
 function settings() {

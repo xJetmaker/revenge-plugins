@@ -66,3 +66,5 @@ The exact checked loader caches installed JavaScript and catches update-fetch fa
 0.1.1: supports memo-wrapped forward-ref Image components, prevents toast failures from disabling the plugin, and displays startup exceptions in an alert (including evaluation-time failures). If enabling still fails, send the alert text so the exact native component issue can be identified.
 
 Version 0.1.2 supports function-based React Native Image components through React and JSX element factories, preserving the original Image identity and refs. Refetch the plugin, reload Discord, then enable it to test on your phone.
+
+Version 0.1.3 guards Discord onLongPress callbacks during multi-finger media gestures, including callbacks retaining the initial one-finger event. Suppression stays latched through finger lifting and clears after release; ordinary one-finger long presses remain available. Refetch and reload Discord to attach guards to existing media and parent pressables.

@@ -80,3 +80,29 @@ test('function Image supports both React and JSX factories without changing its 
  f.plugin.onUnload();assert.equal(f.React.createElement,originalCreate);assert.equal(f.jsxRuntime.jsx,originalJsx);
  assert.equal(f.React.createElement(image,attachment).type,image);
 });
+
+test('one-finger menu works, multi-finger holds suppress stale ancestor long presses until release',async()=>{
+ const f=fixture({functionImage:true});f.plugin.onLoad();let menus=0;
+ const parent=f.jsxRuntime.jsx('Pressable',{onLongPress(){menus++;return 'menu';}});
+ const tile=f.mount(101),single=tile.event([10]);
+ tile.view.props.onTouchStart(single);
+ assert.equal(parent.props.onLongPress(single),'menu');assert.equal(menus,1);
+ tile.view.props.onTouchStart(tile.event([10,20]));
+ parent.props.onLongPress(single);assert.equal(menus,1);
+ await f.tick(450);assert.equal(tile.owner.values[0],true);
+ tile.view.props.onTouchEnd(tile.event([10]));parent.props.onLongPress(single);assert.equal(menus,1);
+ tile.view.props.onTouchEnd(tile.event([]));parent.props.onLongPress(single);assert.equal(menus,1);
+ await f.tick(0);parent.props.onLongPress(single);assert.equal(menus,2);
+ tile.view.props.onTouchStart(tile.event([10,20,30]));parent.props.onLongPress(single);assert.equal(menus,2);
+ await f.tick(700);assert.equal(f.requests.length,1);
+ f.plugin.onUnload();parent.props.onLongPress(single);assert.equal(menus,3);
+});
+test('menu suppression stays within the touched media and honors multi-touch callback events',()=>{
+ const f=fixture();f.plugin.onLoad();let menus=0;
+ const parent=f.React.createElement('Pressable',{onLongPress(){menus++;}}),tile=f.mount(101);
+ tile.view.props.onTouchStart(tile.event([10,20]));
+ parent.props.onLongPress({nativeEvent:{target:99,pageX:210,pageY:10,touches:[{target:99,pageX:210,pageY:10}]}});
+ assert.equal(menus,1);
+ parent.props.onLongPress({nativeEvent:{touches:[{},{}]}});assert.equal(menus,1);
+ f.plugin.onUnload();
+});
