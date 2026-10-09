@@ -1,0 +1,15 @@
+{
+  "name": "No Delete Confirmation",
+  "version": "0.1.0",
+  "description": "Delete your own messages immediately from the message menu, using Discord’s original delete action.",
+  "authors": [
+    {
+      "name": "Custom plugins"
+    }
+  ],
+  "main": "index.js",
+  "hash": "4f3f552bb1a4a79f12c3ef844c549787dc4ce1daa6834c03b03d6731fb9414fd",
+  "vendetta": {
+    "icon": "ic_message_delete"
+  }
+}

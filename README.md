@@ -88,3 +88,13 @@ Version 0.1.11 adds a video-only React Native Gesture Handler Manual gesture/Det
 Version 0.1.12 replaces manual JS state-manager calls with native LongPress recognition configured for exactly two pointers and zero activation delay. URL/download timing remains in the validated per-tile controller (450/1500 ms). Single-pointer input cannot activate this recognizer. Settings preserve the hold/cancellation reason and report the maximum pointer count and native recognition state. Native behavior still needs confirmation on the phone.
 
 Version 0.1.13 keeps the URL visible after one finger lifts and downloads on a second finger returning to the same tile. It removes the automatic 1.5-second download timer. Either original finger can anchor the URL, menus stay suppressed during reading, and each continuous gesture downloads at most once. The working native video recognizer stays active while one finger remains down.
+
+## No Delete Confirmation
+
+Install URL: https://xjetmaker.github.io/revenge-plugins/no-delete-confirmation/
+
+Version 0.1.0 targets classic Revenge 1.11.6 / Discord Android 347.12. Enable it, open the menu on your own message, and choose Delete. The plugin invokes the exact original confirmation callback immediately instead of opening the prompt. It does not make its own HTTP request or simulate a UI button. Other alerts and deleting other users’ messages retain their normal confirmation. Disabling restores the original alert function.
+
+Matching requires the localized delete-message title and a preview authored by the currently signed-in account. It supports classic Messages.DELETE_MESSAGE and the target build’s intl.t.MWMcg7 title descriptor. Unknown alert shapes pass through normally. Native pending/failed-message deletion paths already skip the prompt and are unchanged. Callback failures are reported without retrying the deletion.
+
+The alert structure was checked against [Discord’s mobile message action sheet source](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/modules/messages/native/long_press/LongPressMessageActionSheetUtils.tsx); the classic module/title path was cross-checked with [QuickDelete’s published bundle](https://github.com/vd-plugins/proxy/blob/main/actuallythesun.github.io/vendetta-plugins/QuickDelete/index.js). The generated bundle has automated runtime coverage; the new plugin still needs its first phone test.
