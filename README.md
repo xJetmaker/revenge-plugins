@@ -33,7 +33,7 @@ Downloads require Revenge's native file manager plus a working CameraRoll/galler
    `https://YOUR-USERNAME.github.io/revenge-plugins/media-gestures/`
 7. Enable the plugin and reload Discord once so it attaches to existing media.
 
-This workspace has not created a repository or published anything. If GitHub's menus differ, send the repository URL and we can work through the deployment together.
+Installable files are published from this repository. The installation folder URL is https://xJetmaker.github.io/revenge-plugins/media-gestures/.
 
 ## First phone test
 
