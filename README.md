@@ -68,3 +68,5 @@ The exact checked loader caches installed JavaScript and catches update-fetch fa
 Version 0.1.2 supports function-based React Native Image components through React and JSX element factories, preserving the original Image identity and refs. Refetch the plugin, reload Discord, then enable it to test on your phone.
 
 Version 0.1.3 guards Discord onLongPress callbacks during multi-finger media gestures, including callbacks retaining the initial one-finger event. Suppression stays latched through finger lifting and clears after release; ordinary one-finger long presses remain available. Refetch and reload Discord to attach guards to existing media and parent pressables.
+
+Version 0.1.4 handles responder start/end events so a third finger can upgrade an already-owned two-finger gesture. The media overlay reports hold, cancellation and download status; download errors also open an alert, and the last result is visible in plugin settings. Native module discovery tries each bridge independently. Gallery saving still requires the supported native camera-roll API on the device.

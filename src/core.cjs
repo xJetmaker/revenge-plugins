@@ -29,28 +29,29 @@ function inside(point, rect) {
     point.pageX >= rect.x && point.pageX < rect.x + rect.width &&
     point.pageY >= rect.y && point.pageY < rect.y + rect.height;
 }
-function createGesture({getRect,show,hide,download,setTimer=setTimeout,clearTimer=clearTimeout}) {
+function createGesture({getRect,show,hide,download,setTimer=setTimeout,clearTimer=clearTimeout,onState=()=>{}}) {
   let timer=null, count=0, starts=new Map(), canceled=false, downloaded=false, active=false, generation=0;
   function clear() { generation++; if(timer!==null)clearTimer(timer);timer=null; }
-  function abort() { clear(); hide(); active=false; canceled=true; }
-  function reset() { clear(); hide();count=0;starts.clear();canceled=false;downloaded=false;active=false; }
+  function abort(reason,touchCount=count) { clear(); hide(); active=false; canceled=true;onState({count:touchCount,canceled:true,reason}); }
+  function reset() { clear(); hide();count=0;starts.clear();canceled=false;downloaded=false;active=false;onState({count:0}); }
   function feed(touches) {
     const list=Array.from(touches || []), next=list.length;
     if(next===0) { reset();return; }
     if(canceled)return;
     const rect=getRect();
-    if(next>3 || list.some(t=>!inside(t,rect))) { abort();return; }
+    if(next>3) {abort('Use exactly three fingers to download',next);return;}
+    if(list.some(t=>!inside(t,rect))) {abort('Keep every finger inside the same media tile',next);return;}
     const ids=new Set(list.map(t=>t.identifier));
-    if(ids.size!==next) { abort();return; }
+    if(ids.size!==next) { abort('Touch identifiers are unavailable',next);return; }
     for(const t of list) {
       const start=starts.get(t.identifier);
-      if(start && Math.hypot(t.pageX-start.x,t.pageY-start.y)>12) { abort();return; }
+      if(start && Math.hypot(t.pageX-start.x,t.pageY-start.y)>12) { abort('Hold still to download');return; }
     }
     // A lifted/replaced finger ends the gesture. Do not turn a three-finger release into a URL gesture.
-    if(next<count || [...starts.keys()].some(id=>!ids.has(id))) { abort();return; }
+    if(next<count || [...starts.keys()].some(id=>!ids.has(id))) { abort('Keep all three fingers down until the download starts');return; }
     for(const t of list)if(!starts.has(t.identifier))starts.set(t.identifier,{x:t.pageX,y:t.pageY});
     if(next===count)return;
-    clear();hide();active=false;count=next;
+    clear();hide();active=false;count=next;onState({count});
     if(next<2 || downloaded)return;
     const expected=next, token=generation;
     timer=setTimer(()=>{

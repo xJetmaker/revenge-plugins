@@ -22,7 +22,7 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
   return{view,owner,scrollTo(value){currentX=value;},event(points){return {nativeEvent:{touches:points.map((point,i)=>({identifier:i+1,target:42,pageX:point,pageY:10}))}};}};
  }
  async function tick(ms){clock+=ms;for(let i=0;i<15;i++){for(const[id,t]of [...timers])if(t.due<=clock){timers.delete(id);t.fn();}await Promise.resolve();}}
- return {plugin,RN,React,jsxRuntime,mount,tick,timers,toasts,requests,files,saves,removes,alerts};
+ return {plugin,RN,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,toasts,requests,files,saves,removes,alerts};
 }
 test('packaged plugin downloads the touched batch item once and cleans up its temporary media',async()=>{
  const f=fixture();f.plugin.onLoad();const a=f.mount(101),b=f.mount(102,200);
@@ -104,5 +104,33 @@ test('menu suppression stays within the touched media and honors multi-touch cal
  parent.props.onLongPress({nativeEvent:{target:99,pageX:210,pageY:10,touches:[{target:99,pageX:210,pageY:10}]}});
  assert.equal(menus,1);
  parent.props.onLongPress({nativeEvent:{touches:[{},{}]}});assert.equal(menus,1);
+ f.plugin.onUnload();
+});
+
+test('third finger arriving through responder-start upgrades URL to one download with visible feedback',async()=>{
+ const f=fixture({functionImage:true});f.plugin.onLoad();const tile=f.mount(102,200);
+ tile.view.props.onResponderGrant(tile.event([210,220]));await f.tick(450);
+ assert.equal(tile.owner.values[0],true);
+ tile.view.props.onResponderStart(tile.event([210,220,230]));
+ assert.equal(tile.owner.values[0],false);assert.match(tile.owner.values[2],/Hold three/);
+ await f.tick(700);assert.equal(f.requests.length,1);assert.equal(f.saves.length,1);
+ assert.equal(f.storage.lastDownloadStatus,'Saved media to your gallery');
+ assert.equal(tile.owner.values[2],'Saved media to your gallery');
+ tile.view.props.onResponderEnd(tile.event([210,220]));await f.tick(700);assert.equal(f.requests.length,1);
+ tile.view.props.onResponderEnd(tile.event([]));assert.equal(tile.owner.values[2],null);
+ f.plugin.onUnload();
+});
+test('download cancellation explains why no download starts, while neighbours stay untouched',async()=>{
+ const f=fixture();f.plugin.onLoad();const tile=f.mount(101);
+ tile.view.props.onResponderStart(tile.event([10,20,130]));await f.tick(700);
+ assert.match(tile.owner.values[2],/inside the same media tile/);assert.equal(f.requests.length,0);
+ f.plugin.onUnload();
+});
+test('missing gallery support is visible even when toasts are broken',async()=>{
+ const f=fixture({gallery:false,brokenToast:true});f.plugin.onLoad();const tile=f.mount(101);
+ tile.view.props.onResponderStart(tile.event([10,20,30]));await f.tick(700);
+ assert.equal(f.alerts.length,1);assert.match(f.alerts[0].message,/Gallery saving is unavailable/);
+ assert.match(tile.owner.values[2],/Gallery saving is unavailable/);
+ assert.equal(f.requests.length,0);assert.equal(f.storage.lastDownloadStatus,f.alerts[0].message);
  f.plugin.onUnload();
 });

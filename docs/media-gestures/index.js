@@ -29,28 +29,29 @@ function inside(point, rect) {
     point.pageX >= rect.x && point.pageX < rect.x + rect.width &&
     point.pageY >= rect.y && point.pageY < rect.y + rect.height;
 }
-function createGesture({getRect,show,hide,download,setTimer=setTimeout,clearTimer=clearTimeout}) {
+function createGesture({getRect,show,hide,download,setTimer=setTimeout,clearTimer=clearTimeout,onState=()=>{}}) {
   let timer=null, count=0, starts=new Map(), canceled=false, downloaded=false, active=false, generation=0;
   function clear() { generation++; if(timer!==null)clearTimer(timer);timer=null; }
-  function abort() { clear(); hide(); active=false; canceled=true; }
-  function reset() { clear(); hide();count=0;starts.clear();canceled=false;downloaded=false;active=false; }
+  function abort(reason,touchCount=count) { clear(); hide(); active=false; canceled=true;onState({count:touchCount,canceled:true,reason}); }
+  function reset() { clear(); hide();count=0;starts.clear();canceled=false;downloaded=false;active=false;onState({count:0}); }
   function feed(touches) {
     const list=Array.from(touches || []), next=list.length;
     if(next===0) { reset();return; }
     if(canceled)return;
     const rect=getRect();
-    if(next>3 || list.some(t=>!inside(t,rect))) { abort();return; }
+    if(next>3) {abort('Use exactly three fingers to download',next);return;}
+    if(list.some(t=>!inside(t,rect))) {abort('Keep every finger inside the same media tile',next);return;}
     const ids=new Set(list.map(t=>t.identifier));
-    if(ids.size!==next) { abort();return; }
+    if(ids.size!==next) { abort('Touch identifiers are unavailable',next);return; }
     for(const t of list) {
       const start=starts.get(t.identifier);
-      if(start && Math.hypot(t.pageX-start.x,t.pageY-start.y)>12) { abort();return; }
+      if(start && Math.hypot(t.pageX-start.x,t.pageY-start.y)>12) { abort('Hold still to download');return; }
     }
     // A lifted/replaced finger ends the gesture. Do not turn a three-finger release into a URL gesture.
-    if(next<count || [...starts.keys()].some(id=>!ids.has(id))) { abort();return; }
+    if(next<count || [...starts.keys()].some(id=>!ids.has(id))) { abort('Keep all three fingers down until the download starts');return; }
     for(const t of list)if(!starts.has(t.identifier))starts.set(t.identifier,{x:t.pageX,y:t.pageY});
     if(next===count)return;
-    clear();hide();active=false;count=next;
+    clear();hide();active=false;count=next;onState({count});
     if(next<2 || downloaded)return;
     const expected=next, token=generation;
     timer=setTimer(()=>{
@@ -89,7 +90,10 @@ function startupError(error) {
   }
 }
 function native(name) {
-  try {return RN.NativeModules?.[name] || globalThis.nativeModuleProxy?.[name] || globalThis.__turboModuleProxy?.(name);} catch(_){return null;}
+  for(const lookup of [()=>globalThis.__turboModuleProxy?.(name),()=>globalThis.nativeModuleProxy?.[name],()=>RN.NativeModules?.[name]]) {
+    try {const module=lookup();if(module)return module;}catch(_){}
+  }
+  return null;
 }
 function fileManager() {
   return ['NativeFileModule','RTNFileManager','DCDFileManager'].map(native).find(m=>typeof m?.writeFile==='function');
@@ -102,15 +106,21 @@ function gallery() {
   if(typeof api?.save==='function')return (uri,type)=>api.save(uri,{type,album:'Revenge'});
   return null;
 }
-async function download(media) {
-  if(!enabled || inFlight.has(media.key))return;
-  if(downloads>=2){notify('Two downloads are already running. Try again shortly.');return;}
+async function download(media,onStatus=()=>{}) {
+  const status=(message,problem=false)=>{
+    try {vendetta.plugin.storage.lastDownloadStatus=message;}catch(_){}
+    onStatus(message);notify(message);
+    if(problem)try {RN.Alert.alert('Media Gestures download',message);}catch(_){}
+  };
+  if(!enabled)return;
+  if(inFlight.has(media.key)){onStatus('This attachment is already downloading');return;}
+  if(downloads>=2){status('Two downloads are already running. Try again shortly.');return;}
   const files=fileManager(),save=gallery();
-  if(!files || !save){notify('Media Gestures: gallery saving is unavailable on this build.');return;}
+  if(!files || !save){status(!files?'Native file writing is unavailable on this Discord build.':'Gallery saving is unavailable on this Discord build.',true);return;}
   inFlight.add(media.key);downloads++;
   let cacheName=null,controller=null,timeout=null;
   try {
-    notify('Downloading '+media.filename);
+    status('Downloading media…');
     if(typeof AbortController==='function'){controller=new AbortController();controllers.add(controller);timeout=setTimeout(()=>controller.abort(),45000);}
     const response=await fetch(media.url,controller?{signal:controller.signal}:{});
     if(!response.ok)throw Error('HTTP '+response.status+' (the attachment link may have expired)');
@@ -122,13 +132,15 @@ async function download(media) {
     if(bytes.length>max)throw Error('File exceeds the 32 MB limit for this first build');
     if(!enabled)throw Error('Plugin was disabled');
     cacheName='revenge-media-gestures/'+Date.now()+'-'+Math.random().toString(36).slice(2)+'-'+media.filename;
+    onStatus('Writing downloaded media…');
     const path=await files.writeFile('cache',cacheName,base64(bytes),'base64');
     if(typeof path!=='string' || !path)throw Error('Native file manager returned no local path');
     const uri=/^(file|content):\/\//.test(path)?path:'file://'+path;
     if(!enabled)throw Error('Plugin was disabled');
+    onStatus('Saving media to your gallery…');
     await save(uri,media.video?'video':'photo');
-    notify('Saved '+media.filename+' to your gallery');
-  } catch(error) {if(enabled)notify('Download failed: '+String(error?.message || error));}
+    status('Saved media to your gallery');
+  } catch(error) {if(enabled)status('Download failed: '+String(error?.message || error),true);}
   finally {
     clearTimeout(timeout);if(controller)controllers.delete(controller);
     if(cacheName && typeof files.removeFile==='function')try{await files.removeFile('cache',cacheName);}catch(_){}
@@ -163,17 +175,22 @@ function guardLongPress(element) {
   return React.cloneElement(element,{onLongPress:guarded});
 }
 function MediaBox({element,media}) {
-  const ref=React.useRef(null),rect=React.useRef(null),gesture=React.useRef(null),eventVersion=React.useRef(0),alive=React.useRef(true),[visible,setVisible]=React.useState(false),[revision,setRevision]=React.useState(0);
+  const ref=React.useRef(null),rect=React.useRef(null),gesture=React.useRef(null),eventVersion=React.useRef(0),alive=React.useRef(true),[visible,setVisible]=React.useState(false),[revision,setRevision]=React.useState(0),[feedback,setFeedback]=React.useState(null);
   const session=React.useRef({blocked:false,targets:new Set(),rect:null,releaseTimer:null});
   const resetSession=()=>{clearTimeout(session.current.releaseTimer);session.current.blocked=false;session.current.targets.clear();touchSessions.delete(session.current);};
   const measured=()=>ref.current?.measureInWindow((x,y,width,height)=>{rect.current={x,y,width,height};session.current.rect=rect.current;});
   React.useEffect(()=>{
-    const state={clear(){resetSession();eventVersion.current++;gesture.current?.cancel();setVisible(false);setRevision(value=>value+1);}};instances.add(state);
+    const state={clear(){resetSession();eventVersion.current++;gesture.current?.cancel();setVisible(false);setFeedback(null);setRevision(value=>value+1);}};instances.add(state);
     return ()=>{resetSession();alive.current=false;eventVersion.current++;instances.delete(state);gesture.current?.cancel();};
   },[]);
   React.useEffect(()=>{
     resetSession();gesture.current?.cancel();
-    gesture.current=createGesture({getRect:()=>rect.current,show:()=>{if(enabled && alive.current)setVisible(true);},hide:()=>{if(alive.current)setVisible(false);},download:()=>download(media)});
+    gesture.current=createGesture({getRect:()=>rect.current,show:()=>{if(enabled && alive.current)setVisible(true);},hide:()=>{if(alive.current)setVisible(false);},download:()=>download(media,message=>{if(enabled && alive.current)setFeedback(message);}),
+      onState:state=>{
+        if(!alive.current)return;
+        if(state.canceled)setFeedback(state.count>=2?state.reason:null);
+        else setFeedback(state.count===3?'Hold three fingers still to download…':null);
+      }});
     return ()=>gesture.current?.cancel();
   },[media.key,media.url]);
   const cancel=()=>{resetSession();eventVersion.current++;gesture.current?.cancel();};
@@ -213,11 +230,11 @@ function MediaBox({element,media}) {
     ref,collapsable:false,style:outer,onLayout:measured,
     onTouchStart:feed,onTouchMove:feed,onTouchEnd:feed,onTouchCancel:cancel,
     onStartShouldSetResponderCapture:capture,onMoveShouldSetResponderCapture:capture,
-    onResponderGrant:feed,onResponderMove:feed,
+    onResponderGrant:feed,onResponderStart:feed,onResponderEnd:feed,onResponderMove:feed,
     onResponderRelease:feed,onResponderTerminate:cancel,
     onResponderTerminationRequest:()=>!(gesture.current?.claimed()),
-  },clone,visible?create(RN.View,{pointerEvents:'none',style:{position:'absolute',top:0,left:0,right:0,zIndex:999,elevation:8,padding:7,backgroundColor:'rgba(15,17,22,0.94)',borderRadius:6}},
-    create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},media.url)):null);
+  },clone,(visible || feedback)?create(RN.View,{pointerEvents:'none',style:{position:'absolute',top:0,left:0,right:0,zIndex:999,elevation:8,padding:7,backgroundColor:'rgba(15,17,22,0.94)',borderRadius:6}},
+    create(RN.Text,{selectable:false,style:{color:'#fff',fontSize:11,lineHeight:15}},feedback || media.url)):null);
 }
 function wrap(element,source) {
   if(!enabled || !React.isValidElement(element))return element;
@@ -285,7 +302,7 @@ function settings() {
   return create(RN.ScrollView,{contentContainerStyle:{padding:20}},
     create(RN.Text,{style:{color:'#fff',fontSize:20,fontWeight:'600',marginBottom:16}},'Media Gestures'),
     create(RN.Text,{style:{color:'#b8bbc4',fontSize:14,lineHeight:22}},
-      'Two fingers: hold 0.45 seconds to see the URL, then lift to hide.\n\nThree fingers: hold 0.7 seconds to download once. All fingers must touch the same media tile. Moving cancels.\n\nDownload limit: 32 MB; at most two simultaneous downloads. Gallery permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
+      'Two fingers: hold 0.45 seconds to see the URL, then lift to hide.\n\nThree fingers: hold 0.7 seconds to download once. All fingers must touch the same media tile. Moving cancels.\n\nDownload limit: 32 MB; at most two simultaneous downloads. Gallery permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
 }
 return {onLoad,onUnload,settings};
 
