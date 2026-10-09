@@ -2,7 +2,7 @@
 const {mediaFromSource,createGesture,base64}=core;
 const {React,RN}= {React:vendetta.metro.common.React,RN:vendetta.metro.common.ReactNative};
 const create=React.createElement.bind(React),unpatches=[],instances=new Set(),inFlight=new Set(),controllers=new Set(),touchSessions=new Set(),functionMedia=new Set(),longPressGuards=new WeakMap();
-let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null;
+let enabled=false,downloads=0,videoPatched=false,appStateSubscription=null,menuGuard=false,pressabilityGuard=false;
 const notify=message=>{try{vendetta.ui.toasts.showToast(message);}catch(error){vendetta.logger?.warn?.('Media Gestures toast unavailable: '+String(error));}};
 function startupError(error) {
   const message=String(error?.message || error);
@@ -76,11 +76,39 @@ function splitStyle(style) {
   for(const key of Object.keys(flat))(layoutKeys.has(key)?outer:inner)[key]=flat[key];
   return {outer,inner:[inner,{position:'absolute',top:0,left:0,width:'100%',height:'100%'}]};
 }
+function ownsMediaHold() {
+  return enabled && [...touchSessions].some(session=>session.blocked && session.owned);
+}
+function patchMenuGuards() {
+  // Discord can open its action sheet without forwarding a touch event or
+  // an onLongPress prop. Guard the actual sheet entry point for an owned hold.
+  try {
+    const sheets=vendetta.metro.findByProps('openLazy','hideActionSheet');
+    if(typeof sheets?.openLazy==='function') {
+      unpatches.push(vendetta.patcher.instead('openLazy',sheets,(args,original)=>{
+        if(ownsMediaHold())return;
+        return original(...args);
+      }));menuGuard=true;
+    }
+  }catch(error){vendetta.logger?.warn?.('Media Gestures action-sheet guard unavailable: '+String(error));}
+  // Patch the prototype so pressables mounted before this plugin are covered too.
+  try {
+    const module=vendetta.metro.findByName('Pressability');
+    const prototype=(module?.default || module)?.prototype;
+    if(typeof prototype?._handleLongPress==='function') {
+      unpatches.push(vendetta.patcher.instead('_handleLongPress',prototype,(args,original)=>{
+        if(blockLongPress(args[0]))return;
+        return original(...args);
+      }));pressabilityGuard=true;
+    }
+  }catch(error){vendetta.logger?.warn?.('Media Gestures Pressability guard unavailable: '+String(error));}
+}
 function blockLongPress(event) {
   if(!enabled)return false;
   const nativeEvent=event?.nativeEvent;
   if(nativeEvent?.touches?.length>1)return true;
   const point=nativeEvent?.touches?.[0] || nativeEvent;
+  if(point?.target==null && !Number.isFinite(point?.pageX))return ownsMediaHold();
   return [...touchSessions].some(session=>session.blocked && (
     (point?.target!=null && session.targets.has(point.target)) ||
     (session.rect && point?.pageX>=session.rect.x && point.pageX<session.rect.x+session.rect.width &&
@@ -98,8 +126,8 @@ function guardLongPress(element) {
 }
 function MediaBox({element,media}) {
   const ref=React.useRef(null),rect=React.useRef(null),gesture=React.useRef(null),eventVersion=React.useRef(0),alive=React.useRef(true),[visible,setVisible]=React.useState(false),[revision,setRevision]=React.useState(0),[feedback,setFeedback]=React.useState(null);
-  const session=React.useRef({blocked:false,targets:new Set(),rect:null,releaseTimer:null});
-  const resetSession=()=>{clearTimeout(session.current.releaseTimer);session.current.blocked=false;session.current.targets.clear();touchSessions.delete(session.current);};
+  const session=React.useRef({blocked:false,owned:false,targets:new Set(),rect:null,releaseTimer:null});
+  const resetSession=()=>{clearTimeout(session.current.releaseTimer);session.current.blocked=false;session.current.owned=false;session.current.targets.clear();touchSessions.delete(session.current);};
   const measured=()=>ref.current?.measureInWindow((x,y,width,height)=>{rect.current={x,y,width,height};session.current.rect=rect.current;});
   React.useEffect(()=>{
     const state={clear(){resetSession();eventVersion.current++;gesture.current?.cancel();setVisible(false);setFeedback(null);setRevision(value=>value+1);}};instances.add(state);
@@ -110,6 +138,8 @@ function MediaBox({element,media}) {
     gesture.current=createGesture({getRect:()=>rect.current,show:()=>{if(enabled && alive.current)setVisible(true);},hide:()=>{if(alive.current)setVisible(false);},download:()=>download(media,message=>{if(enabled && alive.current)setFeedback(message);}),
       onState:state=>{
         if(!alive.current)return;
+        if(!state.count)session.current.owned=false;
+        else if(state.count>=2 && !state.canceled)session.current.owned=true;
         if(state.canceled)setFeedback(state.count>=2?state.reason:null);
         else setFeedback(state.count===3?'Hold three fingers still to download…':null);
       }});
@@ -203,6 +233,7 @@ function patchFunction(component) {
 function onLoad() {
   if(enabled)return;enabled=true;
   try {
+  patchMenuGuards();
   if(!patchFactories())throw Error('React element factories are unavailable');
   if(!patchForward(RN.Image) && !patchFunction(RN.Image))throw Error('No supported Image render hook. Image type: '+typeof RN.Image+'; fields: '+Object.keys(RN.Image || {}).join(', '));
   // React Native Video commonly exports a forwardRef. Never guess an array index or an internal save function.
@@ -217,13 +248,13 @@ function onLoad() {
   } catch(error) {onUnload();startupError(error);throw error;}
 }
 function onUnload() {
-  enabled=false;functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
+  enabled=false;menuGuard=false;pressabilityGuard=false;functionMedia.clear();for(const session of touchSessions){clearTimeout(session.releaseTimer);session.blocked=false;}touchSessions.clear();appStateSubscription?.remove();appStateSubscription=null;videoPatched=false;for(const controller of controllers)controller.abort();for(const unpatch of unpatches.splice(0))unpatch();
   for(const item of instances)item.clear();
 }
 function settings() {
   return create(RN.ScrollView,{contentContainerStyle:{padding:20}},
     create(RN.Text,{style:{color:'#fff',fontSize:20,fontWeight:'600',marginBottom:16}},'Media Gestures'),
     create(RN.Text,{style:{color:'#b8bbc4',fontSize:14,lineHeight:22}},
-      'Two fingers: hold 0.45 seconds to see the URL, then lift to hide.\n\nThree fingers: hold 0.7 seconds to download once. All fingers must touch the same media tile. Moving cancels.\n\nDownload limit: 32 MB; at most two simultaneous downloads. Gallery permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
+      'Two fingers: hold 0.45 seconds to see the URL, then lift to hide.\n\nThree fingers: hold 0.7 seconds to download once. All fingers must touch the same media tile. Moving cancels.\n\nDownload limit: 32 MB; at most two simultaneous downloads. Gallery permission may be required.\n\nImage hook: '+(enabled?'active':'inactive')+'\nInline video hook: '+(videoPatched?'active':'not detected (video thumbnails may still work)')+'\nContext-menu guard: '+(menuGuard?'active':'not detected')+'\nPressability guard: '+(pressabilityGuard?'active':'not detected')+'\nFile manager: '+(fileManager()?'available':'not detected')+'\nGallery saving: '+(gallery()?'available':'not detected')+'\nLast download: '+(vendetta.plugin.storage.lastDownloadStatus || 'not started')+'\n\nTarget: Revenge 1.11.6 / Discord 347.12. This is a test build: native media rendering and gestures must be verified on your phone.'));
 }
 return {onLoad,onUnload,settings};

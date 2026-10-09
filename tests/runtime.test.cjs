@@ -9,7 +9,9 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
  const jsxRuntime={jsx:(type,props,key)=>({type,key,props}),jsxs:(type,props,key)=>({type,key,props})};
  if(functionImage)RN.Image=Object.assign(function Image(props){return React.createElement('NativeImage',props);},{displayName:'Image',getSize(){},getSizeWithHeaders(){},prefetch(){},prefetchWithMetadata(){},abortPrefetch(){},queryCache(){},resolveAssetSource(){}});
  if(memo)RN.Image={type:RN.Image};if(unsupported)RN.Image={};
- const vendetta={plugin:{storage:{}},logger:{warn(){}},metro:{common:{React,ReactNative:RN},findByName:()=>null,findByProps:()=>null,findByPropsAll:()=>[jsxRuntime]},ui:{toasts:{showToast:m=>{if(brokenToast)throw Error("toast unavailable");toasts.push(m);}}},patcher:{after(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original(...args));};patches.push([obj,name,original]);return()=>obj[name]=original;}}};
+ const sheets={opened:[],openLazy(...args){this.opened.push(args);return 'opened';},hideActionSheet(){}};
+ class Pressability {_handleLongPress(event){this.calls=(this.calls || 0)+1;this.event=event;return 'long press';}}
+ const vendetta={plugin:{storage:{}},logger:{warn(){}},metro:{common:{React,ReactNative:RN},findByName:name=>name==='Pressability'?Pressability:null,findByProps:(...props)=>props.includes('hideActionSheet')?sheets:null,findByPropsAll:()=>[jsxRuntime]},ui:{toasts:{showToast:m=>{if(brokenToast)throw Error("toast unavailable");toasts.push(m);}}},patcher:{instead(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original.bind(this));};return()=>obj[name]=original;},after(name,obj,fn){const original=obj[name];obj[name]=function(...args){return fn(args,original(...args));};patches.push([obj,name,original]);return()=>obj[name]=original;}}};
  const context={vendetta,console,Uint8Array,AbortController,fetch:async url=>{requests.push(url);return{ok:true,status:200,headers:{get:n=>n==='content-type'?'image/png':null},arrayBuffer:async()=>Uint8Array.from([0,1,2,3]).buffer};},
   setTimeout:(fn,delay)=>{const id=++seq;timers.set(id,{fn,due:clock+delay});return id;},clearTimeout:id=>timers.delete(id)};
  const plugin=vm.runInNewContext('(vendetta=>'+fs.readFileSync(require.resolve('../docs/media-gestures/index.js'),'utf8')+')(vendetta)',context);
@@ -22,7 +24,7 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
   return{view,owner,scrollTo(value){currentX=value;},event(points){return {nativeEvent:{touches:points.map((point,i)=>({identifier:i+1,target:42,pageX:point,pageY:10}))}};}};
  }
  async function tick(ms){clock+=ms;for(let i=0;i<15;i++){for(const[id,t]of [...timers])if(t.due<=clock){timers.delete(id);t.fn();}await Promise.resolve();}}
- return {plugin,RN,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,toasts,requests,files,saves,removes,alerts};
+ return {plugin,RN,sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,toasts,requests,files,saves,removes,alerts};
 }
 test('packaged plugin downloads the touched batch item once and cleans up its temporary media',async()=>{
  const f=fixture();f.plugin.onLoad();const a=f.mount(101),b=f.mount(102,200);
@@ -133,4 +135,37 @@ test('missing gallery support is visible even when toasts are broken',async()=>{
  assert.match(tile.owner.values[2],/Gallery saving is unavailable/);
  assert.equal(f.requests.length,0);assert.equal(f.storage.lastDownloadStatus,f.alerts[0].message);
  f.plugin.onUnload();
+});
+
+test('action-sheet entry point cannot interrupt an owned three-finger hold, even with no event',async()=>{
+ const f=fixture({functionImage:true}),original=f.sheets.openLazy;
+ f.plugin.onLoad();const tile=f.mount(102,200);
+ assert.equal(f.sheets.openLazy('normal','message-menu',{}),'opened');
+ tile.view.props.onResponderStart(tile.event([210,220,230]));
+ assert.equal(f.sheets.openLazy('lazy','message-menu',{}),undefined);
+ assert.equal(f.sheets.opened.length,1);
+ await f.tick(700);assert.equal(f.saves.length,1);
+ tile.view.props.onResponderEnd(tile.event([210,220]));
+ f.sheets.openLazy('lazy','message-menu',{});assert.equal(f.sheets.opened.length,1);
+ tile.view.props.onResponderEnd(tile.event([]));await f.tick(0);
+ assert.equal(f.sheets.openLazy('normal','message-menu',{}),'opened');
+ assert.equal(f.sheets.opened.length,2);
+ f.plugin.onUnload();assert.equal(f.sheets.openLazy,original);
+});
+test('pre-existing Pressability instances retain single-finger long presses but block media holds',async()=>{
+ const f=fixture(),pressable=new f.Pressability(),original=f.Pressability.prototype._handleLongPress;
+ f.plugin.onLoad();const tile=f.mount(101),event=tile.event([10]);
+ assert.equal(pressable._handleLongPress(event),'long press');assert.equal(pressable.calls,1);
+ tile.view.props.onResponderStart(tile.event([10,20,30]));
+ assert.equal(pressable._handleLongPress(event),undefined);
+ assert.equal(pressable._handleLongPress(),undefined);assert.equal(pressable.calls,1);
+ await f.tick(700);assert.equal(f.saves.length,1);
+ f.plugin.onUnload();assert.equal(f.Pressability.prototype._handleLongPress,original);
+ assert.equal(pressable._handleLongPress(event),'long press');assert.equal(pressable.calls,2);
+});
+test('touches split between tiles do not globally block action sheets',()=>{
+ const f=fixture();f.plugin.onLoad();const tile=f.mount(101);
+ tile.view.props.onResponderStart(tile.event([10,20,130]));
+ assert.equal(f.sheets.openLazy('normal','message-menu',{}),'opened');
+ assert.equal(f.sheets.opened.length,1);f.plugin.onUnload();
 });
