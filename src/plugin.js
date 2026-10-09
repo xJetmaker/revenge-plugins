@@ -291,6 +291,28 @@ function patchForward(component) {
 }
 // Function components have no mutable render method. Intercept their elements,
 // preserving the original component, refs and React's hook execution.
+function guardVideoPresenter(element) {
+  const props=element.props;
+  const type=element.type?.displayName || element.type?.name || element.type?.type?.name;
+  if(type!=='MediaViewerItemPresenter' || typeof props?.renderMedia!=='function')return element;
+  const renderMedia=props.renderMedia;
+  // The presenter sizes an animated child internally. Its renderMedia callback
+  // receives the actual tile's source and 100%-fill style inside that child.
+  // Wrap there, never around the window-sized presenter or overlay controls.
+  const guarded=function(...args) {
+    const rendered=renderMedia.apply(this,args);
+    if(!enabled || !React.isValidElement(rendered))return rendered;
+    const tile=args[0];
+    if(!tile?.source || !mediaFromSource(videoSource(tile))?.video)return rendered;
+    const candidate=React.cloneElement(rendered,{
+      source:rendered.props.source || tile.source,
+      style:rendered.props.style || tile.style,
+    });
+    return wrapVideo(candidate);
+  };
+  videoDiagnostics.set('MediaViewerItemPresenter',{wrapped:true,props:'renderMedia callback attached to the sized media child'});
+  return React.cloneElement(element,{renderMedia:guarded});
+}
 function patchFactories() {
   const holders=new Set([React]);
   try {for(const runtime of vendetta.metro.findByPropsAll?.('jsx','jsxs') || [])holders.add(runtime);}catch(_){}
@@ -300,7 +322,8 @@ function patchFactories() {
     try {
       unpatches.push(vendetta.patcher.after(name,holder,(args,result)=>{
         if(!enabled || !React.isValidElement(result))return result;
-        const element=guardLongPress(result);
+        const element=guardVideoPresenter(guardLongPress(result));
+        if(element.props.renderMedia!==result.props.renderMedia)return element;
         // Match the source of one rendered tile, including full-screen memoized
         // media renderers whose export names differ between Discord builds.
         // Never inspect a whole message's attachment list or pick a poster URL.

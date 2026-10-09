@@ -1,6 +1,6 @@
 # Media Gestures for classic Revenge
 
-Version 0.1.8 — device-test build.
+Version 0.1.9 — device-test build.
 Target: Revenge `1b1d297-main` (1.11.6), Discord Android 347.12 (347012).
 The plugin API was checked against the exact Revenge source commit `1b1d297416594087769987908e5fc09af36b7e6e`. The Discord application itself is not available in this workspace, so native component interception, touch delivery, and gallery permission behavior are NOT yet verified on a real phone.
 
@@ -78,3 +78,5 @@ Version 0.1.6 replaces three-finger downloads with a 1.5-second two-finger hold 
 Version 0.1.7 expands real video component support and original URL/dimension handling. Video component interception still needs confirmation on the target phone.
 
 Version 0.1.8 recognizes full-screen video renderers from their own source/videoURI props rather than requiring a matching export name. Absolute-fill layouts are supported. Responder capture checks media bounds instead of requiring identical native touch targets, and responder grant blocks competing Android native responders. Video tiles seen in settings lists up to six component names, wrapping results and prop names, with no attachment URLs or message content.
+
+Version 0.1.9 hooks MediaViewerItemPresenter.renderMedia, using each callback’s actual tile source and fill style inside Discord’s internally sized animated child. This covers the no-style presenter reported on the target phone, including cached JSX factories, without a window-wide gesture surface.

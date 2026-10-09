@@ -28,7 +28,14 @@ function fixture({gallery=true,memo=false,unsupported=false,brokenToast=false,fu
   return{view,owner,scrollTo(value){currentX=value;},event(points){return {nativeEvent:{touches:points.map((point,i)=>({identifier:i+1,target:42,pageX:point,pageY:10}))}};}};
  }
  async function tick(ms){clock+=ms;for(let i=0;i<15;i++){for(const[id,t]of [...timers])if(t.due<=clock){timers.delete(id);t.fn();}await Promise.resolve();}}
- return {plugin,RN,video,renderNested(element){nestedContext=true;active={refs:[],values:[],effects:[]};try{return element.type(element.props);}finally{nestedContext=false;}},mountVideo(props,x=0,type=video){const element=React.createElement(type,props),owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=element.type(element.props),view=rendered.props.children[0];owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};for(const effect of owner.effects)effect();return {view,owner,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};},sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
+ function mountWrapped(element,x=0){
+  const owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;
+  const rendered=element.type(element.props),view=rendered.props.children[0];
+  owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};
+  for(const effect of owner.effects){const cleanup=effect();if(cleanup)owner.cleanups.push(cleanup);}
+  return {view,owner,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};
+ }
+ return {plugin,RN,video,mountWrapped,renderNested(element){nestedContext=true;active={refs:[],values:[],effects:[]};try{return element.type(element.props);}finally{nestedContext=false;}},mountVideo(props,x=0,type=video){const element=React.createElement(type,props),owner={refs:[],values:[],effects:[],cleanups:[]};active=owner;const rendered=element.type(element.props),view=rendered.props.children[0];owner.refs[0].current={measureInWindow:fn=>fn(x,0,100,100)};for(const effect of owner.effects)effect();return {view,owner,event:points=>({nativeEvent:{touches:points.map((pageX,i)=>({identifier:i+1,target:42,pageX,pageY:10}))}})};},sheets,Pressability,storage:vendetta.plugin.storage,React,jsxRuntime,mount,tick,timers,nativeCalls,toasts,requests,files,saves,removes,alerts};
 }
 test('packaged plugin downloads the touched batch item once and cleans up its temporary media',async()=>{
  const f=fixture();f.plugin.onLoad();const a=f.mount(101),b=f.mount(102,200);
@@ -241,4 +248,32 @@ test('unknown video renderers with direct per-tile sources are covered without w
  const tile=f.mountVideo({source:{uri:'https://cdn.discordapp.com/attachments/100/303/b.mp4'},style:{width:100,height:100}},200,UnnamedVideo);
  tile.view.props.onLayout();assert.equal(tile.view.props.onStartShouldSetResponderCapture(tile.event([210,310])),false);
  tile.view.props.onResponderStart(tile.event([210,310]));await f.tick(1500);assert.equal(f.nativeCalls.length,0);f.plugin.onUnload();
+});
+
+test('full-screen presenter wraps renderMedia inside its actual sized child even with cached JSX factory',async()=>{
+ const f=fixture({nativeDownload:true}),cachedJSX=f.jsxRuntime.jsx;f.plugin.onLoad();
+ function MediaViewerItemPresenter(){}
+ const source={uri:'https://cdn.discordapp.com/attachments/100/402/poster.jpg',videoURI:'https://media.discordapp.net/attachments/100/402/movie.mp4?ex=a&hm=b'};
+ const callback=function(props){assert.equal(this.tag,'receiver');return cachedJSX('ActualVideoRenderer',{source:props.source,paused:false});};
+ const presenter=f.React.createElement(MediaViewerItemPresenter,{source,renderMedia:callback,windowWidth:400,windowHeight:800});
+ assert.equal(presenter.type,MediaViewerItemPresenter);assert.notEqual(presenter.props.renderMedia,callback);assert.equal(presenter.props.style,undefined);
+ const media=presenter.props.renderMedia.call({tag:'receiver'},{source,style:{position:'absolute',width:'100%',height:'100%'}});
+ assert.notEqual(media.type,'ActualVideoRenderer');assert.equal(media.props.element.props.paused,false);
+ const rendered=f.renderNested(media);assert.equal(rendered,media.props.element);
+ const tile=f.mountWrapped(media);
+ tile.view.props.onResponderStart(tile.event([10,20]));await f.tick(1500);
+ assert.equal(f.nativeCalls[0].url,'https://cdn.discordapp.com/attachments/100/402/movie.mp4?ex=a&hm=b');f.plugin.onUnload();
+ const after=presenter.props.renderMedia.call({tag:'receiver'},{source,style:{width:'100%',height:'100%'}});assert.equal(after.type,'ActualVideoRenderer');
+});
+test('presenter callback uses each rendered tile source and does not pick from whole batch arrays',()=>{
+ const f=fixture(),cached=f.jsxRuntime.jsx;f.plugin.onLoad();function MediaViewerItemPresenter(){}
+ const callback=props=>cached('VideoRenderer',{source:props.source});
+ const presenter=f.React.createElement(MediaViewerItemPresenter,{source:[],renderMedia:callback,windowWidth:400,windowHeight:800});
+ for(const id of [501,502]) {
+  const source={videoURI:`https://cdn.discordapp.com/attachments/100/${id}/movie.mp4`};
+  const result=presenter.props.renderMedia({source,style:{width:'100%',height:'100%'}});
+  assert.equal(result.props.media.key,`attachments/100/${id}/movie.mp4`);
+ }
+ const props={source:[{uri:'https://cdn.discordapp.com/attachments/100/501/movie.mp4'},{uri:'https://cdn.discordapp.com/attachments/100/502/movie.mp4'}],style:{width:'100%',height:'100%'}};
+ assert.equal(presenter.props.renderMedia(props).type,'VideoRenderer');f.plugin.onUnload();
 });
