@@ -1,6 +1,6 @@
 "use strict";
 const {React,ReactNative:RN}=vendetta.metro.common;
-let unpatch=null,userStore=null,modernIntl=null;
+let unpatch=null,modernIntl=null;
 let skipped=0,lastStatus='Not used yet';
 function report(error){
   lastStatus='Delete failed: '+String(error?.message || error);
@@ -22,16 +22,16 @@ function previewMessage(node,depth=0){
 function canSkip(options){
   if(!options || typeof options.onConfirm!=='function' || !deleteTitles().has(options.title))return false;
   const message=previewMessage(options.children);
-  let user;try{user=userStore?.getCurrentUser();}catch(_){return false;}
-  return !!(user?.id && message?.author.id===user.id);
+  // Discord already checked permissions before offering this delete prompt.
+  // Keep its exact action for both own messages and moderation deletions.
+  return !!message;
 }
 return {
   onLoad(){
     if(unpatch)return;
     const alerts=vendetta.metro.findByProps('show','openLazy');
-    userStore=vendetta.metro.findByProps('getCurrentUser');
     modernIntl=vendetta.metro.findByProps('intl','t');
-    if(typeof alerts?.show!=='function' || typeof userStore?.getCurrentUser!=='function' || !deleteTitles().size){
+    if(typeof alerts?.show!=='function' || !deleteTitles().size){
       const error=Error('Supported message-delete alert hooks were not found on this Discord build.');report(error);throw error;
     }
     unpatch=vendetta.patcher.instead('show',alerts,(args,original)=>{
@@ -46,9 +46,9 @@ return {
       }catch(error){report(error);}
     });
   },
-  onUnload(){unpatch?.();unpatch=null;userStore=null;modernIntl=null;},
+  onUnload(){unpatch?.();unpatch=null;modernIntl=null;},
   settings(){return React.createElement(RN.ScrollView,{contentContainerStyle:{padding:20}},
     React.createElement(RN.Text,{style:{color:'#fff',fontSize:22,fontWeight:'700',marginBottom:14}},'No Delete Confirmation'),
     React.createElement(RN.Text,{style:{color:'#c4c6ce',fontSize:16,lineHeight:24}},
-      'Choose Delete in your message’s menu to delete immediately. Uses Discord’s original delete action. Other confirmation dialogs are unchanged.\n\nDisable this plugin to restore the normal prompt.\n\nHook: '+(unpatch?'active':'inactive')+'\nConfirmations skipped this session: '+skipped+'\nLast action: '+lastStatus+'\n\nVersion 0.1.0 · Revenge 1.11.6 / Discord 347.12'));}
+      'Choose Delete in a message’s menu to delete immediately, including other people’s messages when you have permission. Uses Discord’s original delete action. Other confirmation dialogs are unchanged.\n\nDisable this plugin to restore the normal prompt.\n\nHook: '+(unpatch?'active':'inactive')+'\nConfirmations skipped this session: '+skipped+'\nLast action: '+lastStatus+'\n\nVersion 0.1.1 · Revenge 1.11.6 / Discord 347.12'));}
 };

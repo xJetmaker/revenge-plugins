@@ -12,5 +12,5 @@ const deleteOut=path.join(__dirname,'docs','no-delete-confirmation');fs.mkdirSyn
 const deleteSource=fs.readFileSync(path.join(__dirname,'src/no-delete-confirmation.js'),'utf8').replace(/\r\n/g,'\n');
 const deleteBundle='(()=>{'+deleteSource+'\n})()';new Function('vendetta','return '+deleteBundle);
 fs.writeFileSync(path.join(deleteOut,'index.js'),deleteBundle);
-fs.writeFileSync(path.join(deleteOut,'manifest.json'),JSON.stringify({name:'No Delete Confirmation',version:'0.1.0',description:'Delete your own messages immediately from the message menu, using Discord’s original delete action.',authors:[{name:'Custom plugins'}],main:'index.js',hash:crypto.createHash('sha256').update(deleteBundle).digest('hex'),vendetta:{icon:'ic_message_delete'}},null,2));
+fs.writeFileSync(path.join(deleteOut,'manifest.json'),JSON.stringify({name:'No Delete Confirmation',version:'0.1.1',description:'Delete messages immediately from the message menu, including moderation deletions, using Discord’s original action.',authors:[{name:'Custom plugins'}],main:'index.js',hash:crypto.createHash('sha256').update(deleteBundle).digest('hex'),vendetta:{icon:'ic_message_delete'}},null,2));
 console.log('Built docs/no-delete-confirmation (classic Revenge / Vendetta-compatible).');
