@@ -1,6 +1,6 @@
 {
   "name": "Exact Unread",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Shows complete unread counts for the current channel and updates on new/deleted messages.",
   "authors": [
     {
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "46500dcba725b58e517a04c348cd50a293e5f1a133f3dfaca3ae03b1b043dacb",
+  "hash": "e5f282c0ca801787104a2043df015a45fc776b9be87f5e2dcdcf45e735a754cd",
   "vendetta": {
     "icon": "ic_message_24px"
   }
