@@ -118,3 +118,9 @@ Version 0.1.0 replaces the existing native swipe-to-reply callback with Discord�
 Requests are deduplicated and failures are reported without retrying. Disabling restores factories and makes previously wrapped callbacks ordinary. The plugin uses native message event props without adding a chat-wide invisible gesture layer. The native swipe animation may still show Discord’s reply arrow; only its action is replaced. Phone compatibility needs a first-device test.
 
 Reference: [MessagesRenderer native callbacks](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/modules/messages/native/MessagesRenderer.tsx), [MessagesHandlers](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/modules/messages/native/MessagesHandlers.tsx).
+
+### Exact Unread / Fast Delete 0.1.1
+
+Exact Unread prefers the actual HTTPUtils.HTTP export (request-object API, including its `del` method) and uses URL-string calls for the legacy REST wrapper. Missing responses produce a descriptive error and retain Discord’s count instead of throwing on undefined.status.
+
+Fast Delete intercepts the native `longPressMessageHandleReply` / `replyToMessage` action for `message_swipe`, plus PendingReplyActionCreators.createPendingReply for builds caching the reply function. The fallback dismisses the keyboard opened by that swipe. It retains the per-message factory hook as a fallback, preserves context-menu Reply, and reports native hook availability and received swipe events in settings. Both plugins still need confirmation on the target phone after refetching and restarting.

@@ -23,6 +23,6 @@ for(const spec of [{id:'exact-unread',name:'Exact Unread',description:'Shows com
   source='const unreadCore=(()=>{'+counting+'})();\n'+source;
  }
  const built='(()=>{'+source+'\n})()';new Function('vendetta','return '+built);fs.writeFileSync(path.join(dir,'index.js'),built);
- fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({name:spec.name,version:'0.1.0',description:spec.description,authors:[{name:'Custom plugins'}],main:'index.js',hash:crypto.createHash('sha256').update(built).digest('hex'),vendetta:{icon:spec.icon}},null,2));
+ fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({name:spec.name,version:'0.1.1',description:spec.description,authors:[{name:'Custom plugins'}],main:'index.js',hash:crypto.createHash('sha256').update(built).digest('hex'),vendetta:{icon:spec.icon}},null,2));
  console.log('Built docs/'+spec.id);
 }

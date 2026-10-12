@@ -1,7 +1,7 @@
 "use strict";
 const {isId,compare,countUnread}=unreadCore;
 const {React,ReactNative:RN}=vendetta.metro.common;
-let read=null,selected=null,http=null,dispatcher=null,originalCount=null,originalEstimated=null;
+let read=null,selected=null,http=null,httpMode="native",dispatcher=null,originalCount=null,originalEstimated=null;
 let enabled=false,foreground=true,session=null,revision=0,refreshTimer=null,appState=null,lastStatus='Not counted yet';
 const unpatches=[],subscriptions=[],waiters=new Set();
 function ack(channelId){return read.getTrackedAckMessageId?.(channelId) || read.ackMessageId?.(channelId);}
@@ -22,7 +22,9 @@ function ensure(channelId,nativeCount){
  countUnread({channelId,ackId:boundary,cancelled:()=>!valid(s),wait,request:async({channelId,before})=>{
    const query={limit:100};if(before)query.before=before;
    // Discord's authenticated HTTP wrapper handles account access; no token lookup.
-   const result=await http.get({url:'/channels/'+channelId+'/messages',query,retries:0});
+   const url='/channels/'+channelId+'/messages';
+   const result=await (httpMode==='native'?http.get({url,query,retries:0}):http.get(url+'?limit=100'+(before?'&before='+before:'')));
+   if(!result || typeof result!=='object')throw Error('History API returned no response ('+httpMode+' hook)');
    if(result.status && (result.status<200 || result.status>=300))throw Object.assign(Error('History HTTP '+result.status),{status:result.status,body:result.body});
    return result.body;
  }}).then(ids=>{
@@ -31,9 +33,9 @@ function ensure(channelId,nativeCount){
    s.ids=ids;s.journal.clear();lastStatus='Exact count: '+ids.size;emit();
  }).catch(error=>{
    if(!valid(s))return;
-   s.error=true;const retry=Number(error.body?.retry_after);
+   s.error=true;const retry=Number(error?.body?.retry_after);
    s.retryAt=Date.now()+Math.max(30000,Number.isFinite(retry)?retry*1000:0);
-   lastStatus=String(error.message || error)+'; Discord’s count is unchanged';
+   lastStatus=String(error?.message || error || 'History request failed')+'; Discord’s count is unchanged';
  });
  return s;
 }
@@ -53,8 +55,10 @@ return {
   if(enabled)return;
   read=vendetta.metro.findByProps('getUnreadCount','isEstimated');
   selected=vendetta.metro.findByProps('getChannelId','getVoiceChannelId') || vendetta.metro.findByProps('getChannelId');
-  http=vendetta.metro.findByProps('get','post','put','patch','delete');dispatcher=vendetta.metro.common.FluxDispatcher;
-  if(!read || typeof read.emitChange!=='function' || !(read.getTrackedAckMessageId || read.ackMessageId) || !selected || !http || !dispatcher?.subscribe)throw Error('Exact Unread: required read-state/history hooks are unavailable');
+  http=vendetta.metro.findByProps('HTTP')?.HTTP || vendetta.metro.findByProps('get','post','del');httpMode='native';
+  if(typeof http?.get!=='function'){http=vendetta.metro.findByProps('get','post','put','patch','delete');httpMode='legacy';}
+  dispatcher=vendetta.metro.common.FluxDispatcher;
+  if(!read || typeof read.emitChange!=='function' || !(read.getTrackedAckMessageId || read.ackMessageId) || !selected || typeof http?.get!=='function' || !dispatcher?.subscribe)throw Error('Exact Unread: required read-state/history hooks are unavailable');
   originalCount=read.getUnreadCount.bind(read);originalEstimated=read.isEstimated.bind(read);foreground=!['background','inactive'].includes(RN.AppState?.currentState);enabled=true;
   unpatches.push(vendetta.patcher.instead('getUnreadCount',read,([id],original)=>{const n=original(id),s=ensure(id,n);return s?.ids && valid(s)?s.ids.size:n;}));
   unpatches.push(vendetta.patcher.instead('isEstimated',read,([id],original)=>session?.ids && session.channelId===id && valid(session)?false:original(id)));
@@ -63,5 +67,5 @@ return {
   appState=RN.AppState?.addEventListener('change',state=>{foreground=state==='active';invalidate();if(foreground)schedule();});schedule();
  },
  onUnload(){enabled=false;clearTimeout(refreshTimer);refreshTimer=null;invalidate();appState?.remove();appState=null;for(const [type,fn]of subscriptions.splice(0))dispatcher.unsubscribe(type,fn);for(const undo of unpatches.splice(0))undo();},
- settings(){return React.createElement(RN.ScrollView,{contentContainerStyle:{padding:20}},React.createElement(RN.Text,{style:{color:'#fff',fontSize:22,fontWeight:'700'}},'Exact Unread'),React.createElement(RN.Text,{style:{color:'#c4c6ce',fontSize:16,lineHeight:24,marginTop:16}},'Shows the real unread message count in the current channel. Missing history is counted after Discord’s tracked read marker. New and deleted messages refresh the count.\n\nDiscord’s original indicator stays visible until counting finishes. Counts only the channel you are viewing; no background scanning.\n\n'+lastStatus+'\n\nVersion 0.1.0'));}
+ settings(){return React.createElement(RN.ScrollView,{contentContainerStyle:{padding:20}},React.createElement(RN.Text,{style:{color:'#fff',fontSize:22,fontWeight:'700'}},'Exact Unread'),React.createElement(RN.Text,{style:{color:'#c4c6ce',fontSize:16,lineHeight:24,marginTop:16}},'Shows the real unread message count in the current channel. Missing history is counted after Discord’s tracked read marker. New and deleted messages refresh the count.\n\nDiscord’s original indicator stays visible until counting finishes. Counts only the channel you are viewing; no background scanning.\n\n'+lastStatus+'\nHistory hook: '+httpMode+'\n\nVersion 0.1.1'));}
 };

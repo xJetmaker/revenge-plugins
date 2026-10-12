@@ -1,6 +1,6 @@
 {
   "name": "Fast Delete",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Replaces swipe-to-reply with direct deletion for messages you can delete.",
   "authors": [
     {
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "3843743f5289df81d3f35c9d28e1d21a23bd363306493a9410924dc9269206c0",
+  "hash": "74d2d56d3b23275b9b301f0419061a03d1fb16fda80cd8f0e02cfa6e334d9ba5",
   "vendetta": {
     "icon": "ic_message_delete"
   }
