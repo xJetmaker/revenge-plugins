@@ -14,3 +14,15 @@ const deleteBundle='(()=>{'+deleteSource+'\n})()';new Function('vendetta','retur
 fs.writeFileSync(path.join(deleteOut,'index.js'),deleteBundle);
 fs.writeFileSync(path.join(deleteOut,'manifest.json'),JSON.stringify({name:'No Delete Confirmation',version:'0.1.1',description:'Delete messages immediately from the message menu, including moderation deletions, using Discord’s original action.',authors:[{name:'Custom plugins'}],main:'index.js',hash:crypto.createHash('sha256').update(deleteBundle).digest('hex'),vendetta:{icon:'ic_message_delete'}},null,2));
 console.log('Built docs/no-delete-confirmation (classic Revenge / Vendetta-compatible).');
+
+for(const spec of [{id:'exact-unread',name:'Exact Unread',description:'Shows complete unread counts for the current channel and updates on new/deleted messages.',icon:'ic_message_24px'}, {id:'fast-delete',name:'Fast Delete',description:'Replaces swipe-to-reply with direct deletion for messages you can delete.',icon:'ic_message_delete'}]){
+ const dir=path.join(__dirname,'docs',spec.id);fs.mkdirSync(dir,{recursive:true});
+ let source=fs.readFileSync(path.join(__dirname,'src',spec.id+'.js'),'utf8').replace(/\r\n/g,'\n');
+ if(spec.id==='exact-unread'){
+  const counting=fs.readFileSync(path.join(__dirname,'src/unread-core.cjs'),'utf8').replace(/\r\n/g,'\n').replace('module.exports={isId,compare,countUnread};','return {isId,compare,countUnread};');
+  source='const unreadCore=(()=>{'+counting+'})();\n'+source;
+ }
+ const built='(()=>{'+source+'\n})()';new Function('vendetta','return '+built);fs.writeFileSync(path.join(dir,'index.js'),built);
+ fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({name:spec.name,version:'0.1.0',description:spec.description,authors:[{name:'Custom plugins'}],main:'index.js',hash:crypto.createHash('sha256').update(built).digest('hex'),vendetta:{icon:spec.icon}},null,2));
+ console.log('Built docs/'+spec.id);
+}

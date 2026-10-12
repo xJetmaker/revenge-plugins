@@ -98,3 +98,23 @@ Version 0.1.1 targets classic Revenge 1.11.6 / Discord Android 347.12. Enable it
 Matching requires the localized delete-message title and a message preview. Discord’s original callback continues to enforce deletion permissions. It supports classic Messages.DELETE_MESSAGE and the target build’s intl.t.MWMcg7 title descriptor. Unknown alert shapes pass through normally. Native pending/failed-message deletion paths already skip the prompt and are unchanged. Callback failures are reported without retrying the deletion.
 
 The alert structure was checked against [Discord’s mobile message action sheet source](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/modules/messages/native/long_press/LongPressMessageActionSheetUtils.tsx); the classic module/title path was cross-checked with [QuickDelete’s published bundle](https://github.com/vd-plugins/proxy/blob/main/actuallythesun.github.io/vendetta-plugins/QuickDelete/index.js). The generated bundle has automated runtime coverage; the new plugin still needs its first phone test.
+
+## Exact Unread
+
+Install URL: https://xjetmaker.github.io/revenge-plugins/exact-unread/
+
+Version 0.1.0 targets classic Revenge 1.11.6 / Discord 347.12. While the current channel has an estimated unread count, it retrieves missing history through Discord’s authenticated HTTP wrapper and counts distinct message IDs after the tracked acknowledgement marker. It changes getUnreadCount/isEstimated only after pagination reaches the read boundary or the end of history. Discord’s localized banner then displays the real count without a plus. No message content is persisted, no token is accessed, and other channels are not scanned.
+
+New, deleted and bulk-deleted message events update the verified ID set without re-fetching it. Events during pagination are reconciled before publishing a count. Channel/acknowledgement changes, reconnects, backgrounding and disable invalidate the session; stale completions never change the UI. Network/rate-limit failures, missing boundaries and the 100-page limit leave Discord’s original count intact. An already in-flight native request may finish after cancellation, but no subsequent page is fetched. Exact counts require a phone test; simulated checks do not establish compatibility.
+
+References: [ReadStateStore](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/stores/ReadStateStore.tsx), [ChatBanner](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/modules/messages/native/ChatBanner.tsx).
+
+## Fast Delete
+
+Install URL: https://xjetmaker.github.io/revenge-plugins/fast-delete/
+
+Version 0.1.0 replaces the existing native swipe-to-reply callback with Discord’s direct deleteMessage action for eligible messages, including messages with media. Your own sent messages can be deleted; other authors require a current PermissionStore.can(MANAGE_MESSAGES, channel) result. The callback also verifies the currently selected channel, excludes pending/failed sends and thread-starter placeholders, and rechecks the message at swipe time. Other messages retain Reply. Non-swipe reply callbacks and ordinary taps, long holds, double-tap reactions, and Media Gestures are unchanged. No Delete Confirmation is optional.
+
+Requests are deduplicated and failures are reported without retrying. Disabling restores factories and makes previously wrapped callbacks ordinary. The plugin uses native message event props without adding a chat-wide invisible gesture layer. The native swipe animation may still show Discord’s reply arrow; only its action is replaced. Phone compatibility needs a first-device test.
+
+Reference: [MessagesRenderer native callbacks](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/modules/messages/native/MessagesRenderer.tsx), [MessagesHandlers](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/modules/messages/native/MessagesHandlers.tsx).
