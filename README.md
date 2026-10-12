@@ -128,3 +128,7 @@ Fast Delete intercepts the native `longPressMessageHandleReply` / `replyToMessag
 ### Exact Unread 0.1.2
 
 HTTP discovery now identifies HTTPUtils through HTTP/getAPIBaseURL/setRequestPatch, then falls back to a get/post/del export or the legacy URL wrapper. History requests handle both the returned promise and HTTPUtils’ optional completion callback. Void or undefined promise returns wait for the callback; they never cause a second request. Cancellation cleans pending completion timers and ignores late callbacks. Requests without any response time out and keep Discord’s estimate intact. Fast Delete remains at its confirmed-working 0.1.1.
+
+### Exact Unread 0.1.3
+
+Reproduced the exact reported error: a synchronous `throw undefined` was mistakenly passed to a completion function whose falsey-error branch resolved an empty response. Success and rejection now use separate functions, so falsey throws are always rejected. The transport prefers HTTPUtils’ exported get function, uses its documented URL-string form with pagination in the URL, and tries the object form only after a synchronous argument-shape error. HTTP failures and rate limits do not trigger signature retries. Callback/promise completion remains deduplicated and cancellation-aware. Settings report the actual request form and response source without attachment URLs, credentials, or message content. The manifest uses a versioned entry file to avoid reusing a stale cached index.js. Fast Delete is unchanged.

@@ -22,7 +22,8 @@ for(const spec of [{id:'exact-unread',name:'Exact Unread',description:'Shows com
   const counting=fs.readFileSync(path.join(__dirname,'src/unread-core.cjs'),'utf8').replace(/\r\n/g,'\n').replace('module.exports={isId,compare,countUnread};','return {isId,compare,countUnread};');
   source='const unreadCore=(()=>{'+counting+'})();\n'+source;
  }
- const built='(()=>{'+source+'\n})()';new Function('vendetta','return '+built);fs.writeFileSync(path.join(dir,'index.js'),built);
- fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({name:spec.name,version:spec.id==='exact-unread'?'0.1.2':'0.1.1',description:spec.description,authors:[{name:'Custom plugins'}],main:'index.js',hash:crypto.createHash('sha256').update(built).digest('hex'),vendetta:{icon:spec.icon}},null,2));
+ const version=spec.id==='exact-unread'?'0.1.3':'0.1.1',main=spec.id==='exact-unread'?'index-'+version+'.js':'index.js';
+ const built='(()=>{'+source+'\n})()';new Function('vendetta','return '+built);fs.writeFileSync(path.join(dir,'index.js'),built);if(main!=='index.js')fs.writeFileSync(path.join(dir,main),built);
+ fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({name:spec.name,version,description:spec.description,authors:[{name:'Custom plugins'}],main,hash:crypto.createHash('sha256').update(built).digest('hex'),vendetta:{icon:spec.icon}},null,2));
  console.log('Built docs/'+spec.id);
 }
