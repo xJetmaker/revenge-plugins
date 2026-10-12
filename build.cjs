@@ -19,10 +19,12 @@ for(const spec of [{id:'exact-unread',name:'Exact Unread',description:'Shows com
  const dir=path.join(__dirname,'docs',spec.id);fs.mkdirSync(dir,{recursive:true});
  let source=fs.readFileSync(path.join(__dirname,'src',spec.id+'.js'),'utf8').replace(/\r\n/g,'\n');
  if(spec.id==='exact-unread'){
-  const counting=fs.readFileSync(path.join(__dirname,'src/unread-core.cjs'),'utf8').replace(/\r\n/g,'\n').replace('module.exports={isId,compare,countUnread};','return {isId,compare,countUnread};');
-  source='const unreadCore=(()=>{'+counting+'})();\n'+source;
+  const counting=fs.readFileSync(path.join(__dirname,'src/unread-core.cjs'),'utf8').replace(/\r\n/g,'\n'),cut=counting.indexOf('// Test/CLI convenience adapter.');
+  if(cut<0)throw Error('Unread counter split marker missing');
+  const mobileCore=counting.slice(0,cut)+'return {isId,compare,createCounter};';
+  source='const unreadCore=(()=>{'+mobileCore+'})();\n'+source;
  }
- const version=spec.id==='exact-unread'?'0.1.3':'0.1.1',main=spec.id==='exact-unread'?'index-'+version+'.js':'index.js';
+ const version=spec.id==='exact-unread'?'0.1.4':'0.1.1',main=spec.id==='exact-unread'?'index-'+version+'.js':'index.js';
  const built='(()=>{'+source+'\n})()';new Function('vendetta','return '+built);fs.writeFileSync(path.join(dir,'index.js'),built);if(main!=='index.js')fs.writeFileSync(path.join(dir,main),built);
  fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({name:spec.name,version,description:spec.description,authors:[{name:'Custom plugins'}],main,hash:crypto.createHash('sha256').update(built).digest('hex'),vendetta:{icon:spec.icon}},null,2));
  console.log('Built docs/'+spec.id);

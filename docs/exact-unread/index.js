@@ -1,44 +1,45 @@
 (()=>{const unreadCore=(()=>{"use strict";
 const isId=id=>typeof id==='string' && /^\d{1,20}$/.test(id);
 const compare=(a,b)=>a.length-b.length || (a<b?-1:a>b?1:0);
-async function countUnread({channelId,ackId,request,wait=async()=>{},cancelled=()=>false,maxPages=100}){
+function createCounter({channelId,ackId,maxPages=100}){
  if(!isId(channelId)||!isId(ackId))throw Error('Missing read boundary');
- const ids=new Set();let before=null;
- for(let page=0;page<maxPages;page++){
-  if(cancelled())throw Error('Cancelled');
-  const messages=await request({channelId,before});
-  if(cancelled())throw Error('Cancelled');
+ const state={ids:new Set(),before:null,pages:0,done:false};
+ state.consume=function(messages){
+  if(state.done)throw Error('History already completed');
   if(!Array.isArray(messages))throw Error('Invalid history response');
-  if(!messages.length)return ids;
+  state.pages++;
+  if(!messages.length){state.done=true;return true;}
   let oldest=null,reached=false;
   for(const message of messages){
    if(!isId(message.id)||(message.channel_id && message.channel_id!==channelId))throw Error('Invalid history message');
    if(oldest===null || compare(message.id,oldest)<0)oldest=message.id;
    if(compare(message.id,ackId)<=0)reached=true;
-   else if(!message.deleted && !(typeof message.flags==='number' && (message.flags&64)))ids.add(message.id);
+   else if(!message.deleted && !(typeof message.flags==='number' && (message.flags&64)))state.ids.add(message.id);
   }
-  if(before && compare(oldest,before)>=0)throw Error('History cursor did not advance');
-  if(reached || messages.length<100)return ids;
-  before=oldest;if(page+1<maxPages)await wait(250);
- }
- throw Error('History limit reached; keeping Discord’s estimate');
+  if(state.before && compare(oldest,state.before)>=0)throw Error('History cursor did not advance');
+  if(reached || messages.length<100){state.done=true;return true;}
+  if(state.pages>=maxPages)throw Error('History limit reached; keeping Discord’s estimate');
+  state.before=oldest;return false;
+ };
+ return state;
 }
-return {isId,compare,countUnread};
-})();
+return {isId,compare,createCounter};})();
 "use strict";
-const {isId,compare,countUnread}=unreadCore;
+const {isId,compare,createCounter}=unreadCore;
 const {React,ReactNative:RN}=vendetta.metro.common;
 let read=null,selected=null,http=null,httpMode="native",dispatcher=null,originalCount=null,originalEstimated=null;
-let enabled=false,foreground=true,session=null,revision=0,refreshTimer=null,appState=null,lastStatus='Not counted yet',transportStatus='No history request yet';
+let enabled=false,foreground=true,session=null,revision=0,refreshTimer=null,appState=null,lastStatus='Not counted yet',transportStatus='No history request yet',failureStage='idle',failureStack='';
 const unpatches=[],subscriptions=[],waiters=new Set();
 function ack(channelId){return read.getTrackedAckMessageId?.(channelId) || read.ackMessageId?.(channelId);}
 function valid(s){return enabled && s===session && s.revision===revision && selected.getChannelId()===s.channelId && ack(s.channelId)===s.ackId;}
 function invalidate(){revision++;session=null;for(const item of waiters){clearTimeout(item.timer);item.resolve();}waiters.clear();}
-function wait(ms){return new Promise(resolve=>{const item={resolve,timer:null};item.timer=setTimeout(()=>{waiters.delete(item);resolve();},ms);waiters.add(item);});}
+function pause(ms,fn){
+ const item={timer:null,resolve:()=>{clearTimeout(item.timer);waiters.delete(item);}};
+ item.timer=setTimeout(()=>{waiters.delete(item);fn();},ms);waiters.add(item);
+}
 function emit(){if(enabled)read.emitChange?.();}
 function schedule(){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>{refreshTimer=null;if(enabled){const id=selected.getChannelId();read.getUnreadCount(id);emit();}},0);}
-function requestHistory(url,query,s){
- return new Promise((resolve,reject)=>{
+function requestHistory(url,query,s,accept,reject){
   let settled=false,callbackSeen=false,requestForm='URL string';
   const path=url+'?limit=100'+(query.before?'&before='+query.before:'');
   const item={timer:null,resolve:()=>fail(Error('Cancelled'))};
@@ -53,7 +54,8 @@ function requestHistory(url,query,s){
    if(result.hasErr){fail(result.err || Error('History request failed'));return;}
    if(typeof result!=='object')return;
    transportStatus=requestForm+'; response via '+source+'; fields: '+Object.keys(result).slice(0,8).join(', ');
-   close();resolve(result);
+   close();
+   if(valid(s)){try{accept(result);}catch(error){reject(error || Error('Response processing failed'));}}
   }
   const callback=result=>{callbackSeen=true;response(result,'callback');};
   function watch(result){
@@ -73,7 +75,6 @@ function requestHistory(url,query,s){
    }else fail(error);
   }
   if(!valid(s))item.resolve();
- });
 }
 function ensure(channelId,nativeCount){
  if(!enabled || !foreground || channelId!==selected.getChannelId())return null;
@@ -83,24 +84,38 @@ function ensure(channelId,nativeCount){
  if(session){if(!session.error || Date.now()<session.retryAt)return session;invalidate();}
  if(!originalEstimated(channelId))return null;
  const s=session={channelId,ackId:boundary,revision,ids:null,journal:new Map(),error:false,retryAt:0};
- lastStatus='Counting missing message history…';
- countUnread({channelId,ackId:boundary,cancelled:()=>!valid(s),wait,request:async({channelId,before})=>{
-   const query={limit:100};if(before)query.before=before;
-   // Discord's authenticated HTTP wrapper handles account access; no token lookup.
-   const url='/channels/'+channelId+'/messages';
-   const result=await requestHistory(url,query,s);
+ failureStack='';lastStatus='Counting missing message history…';
+ const counter=createCounter({channelId,ackId:boundary});
+ function failed(error){
+  if(!valid(s))return;
+  s.error=true;const retry=Number(error?.body?.retry_after);
+  s.retryAt=Date.now()+Math.max(30000,Number.isFinite(retry)?retry*1000:0);
+  lastStatus=String(error?.message || error || 'History request failed')+'; Discord’s count is unchanged';
+  failureStack=typeof error?.stack==='string'?error.stack.split('\n').slice(1,4).join('\n').slice(0,650):'';
+ }
+ function page(){
+  if(!valid(s))return;
+  failureStage='request page '+(counter.pages+1);
+  const query={limit:100};if(counter.before)query.before=counter.before;
+  requestHistory('/channels/'+channelId+'/messages',query,s,result=>{
+   if(!valid(s))return;
+   failureStage='validate callback response';
+   if(!result || typeof result!=='object')throw Error('Invalid callback response');
    if(result.status && (result.status<200 || result.status>=300))throw Object.assign(Error('History HTTP '+result.status),{status:result.status,body:result.body});
-   return result.body;
- }}).then(ids=>{
-   if(!valid(s))return;
-   for(const [id,present] of s.journal)present?ids.add(id):ids.delete(id);
-   s.ids=ids;s.journal.clear();lastStatus='Exact count: '+ids.size;emit();
- }).catch(error=>{
-   if(!valid(s))return;
-   s.error=true;const retry=Number(error?.body?.retry_after);
-   s.retryAt=Date.now()+Math.max(30000,Number.isFinite(retry)?retry*1000:0);
-   lastStatus=String(error?.message || error || 'History request failed')+'; Discord’s count is unchanged';
- });
+   let body=result.body;
+   if(!Array.isArray(body)){
+    const text=typeof body==='string'?body:result.text;
+    if(typeof text==='string' && text.length){try{body=JSON.parse(text);}catch(_){}}
+   }
+   transportStatus+='; HTTP '+String(result.status)+'; body '+(Array.isArray(body)?'array ('+body.length+')':typeof body);
+   failureStage='count message page '+(counter.pages+1);
+   if(!counter.consume(body)){pause(250,page);return;}
+   for(const [id,present] of s.journal)present?counter.ids.add(id):counter.ids.delete(id);
+   s.ids=counter.ids;s.journal.clear();lastStatus='Exact count: '+s.ids.size;
+   failureStage='notify unread UI';emit();failureStage='complete';
+  },failed);
+ }
+ page();
  return s;
 }
 function onMessage(event,present){
@@ -133,7 +148,7 @@ return {
   appState=RN.AppState?.addEventListener('change',state=>{foreground=state==='active';invalidate();if(foreground)schedule();});schedule();
  },
  onUnload(){enabled=false;clearTimeout(refreshTimer);refreshTimer=null;invalidate();appState?.remove();appState=null;for(const [type,fn]of subscriptions.splice(0))dispatcher.unsubscribe(type,fn);for(const undo of unpatches.splice(0))undo();},
- settings(){return React.createElement(RN.ScrollView,{contentContainerStyle:{padding:20}},React.createElement(RN.Text,{style:{color:'#fff',fontSize:22,fontWeight:'700'}},'Exact Unread'),React.createElement(RN.Text,{style:{color:'#c4c6ce',fontSize:16,lineHeight:24,marginTop:16}},'Shows the real unread message count in the current channel. Missing history is counted after Discord’s tracked read marker. New and deleted messages refresh the count.\n\nDiscord’s original indicator stays visible until counting finishes. Counts only the channel you are viewing; no background scanning.\n\n'+lastStatus+'\nHistory hook: '+httpMode+'\nTransport: '+transportStatus+'\n\nVersion 0.1.3 · Build EU-013-URL'));}
+ settings(){return React.createElement(RN.ScrollView,{contentContainerStyle:{padding:20}},React.createElement(RN.Text,{style:{color:'#fff',fontSize:22,fontWeight:'700'}},'Exact Unread'),React.createElement(RN.Text,{style:{color:'#c4c6ce',fontSize:16,lineHeight:24,marginTop:16}},'Shows the real unread message count in the current channel. Missing history is counted after Discord’s tracked read marker. New and deleted messages refresh the count.\n\nDiscord’s original indicator stays visible until counting finishes. Counts only the channel you are viewing; no background scanning.\n\n'+lastStatus+'\nHistory hook: '+httpMode+'\nTransport: '+transportStatus+'\nStage: '+failureStage+(failureStack?'\nTrace: '+failureStack:'')+'\n\nVersion 0.1.4 · Build EU-014-CALLBACK'));}
 };
 
 })()
