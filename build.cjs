@@ -34,8 +34,9 @@ for(const spec of [{id:'exact-unread',name:'Exact Unread',description:'Shows com
  const dir=path.join(__dirname,'docs','posting-shortcuts');fs.mkdirSync(dir,{recursive:true});
  const core=fs.readFileSync(path.join(__dirname,'src/posting-core.cjs'),'utf8').replace(/\r\n/g,'\n').replace('module.exports={isId,messageTime,parseChannel,createPostingController};','return {isId,messageTime,parseChannel,createPostingController};');
  const source=fs.readFileSync(path.join(__dirname,'src/posting-shortcuts.js'),'utf8').replace(/\r\n/g,'\n');
- const built='(()=>{const postingCore=(()=>{'+core+'})();\n'+source+'\n})()';new Function('vendetta','return '+built);
- const main='index-0.1.4.js';fs.writeFileSync(path.join(dir,main),built);fs.writeFileSync(path.join(dir,'index.js'),built);
- fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({name:'Posting Shortcuts',version:'0.1.4',description:'Manually triggered channel templates with confirmed-send history and cooldown checks. One tap, one channel.',authors:[{name:'Custom plugins'}],main,hash:crypto.createHash('sha256').update(built).digest('hex'),vendetta:{icon:'ic_message_24px'}},null,2));
+ const depth=fs.readFileSync(path.join(__dirname,'src/posting-depth.cjs'),'utf8').replace(/\r\n/g,'\n').replace('module.exports={createDepthController};','return {createDepthController};');
+ const built='(()=>{const postingCore=(()=>{'+core+'})();\nconst postingDepth=(()=>{'+depth+'})();\n'+source+'\n})()';new Function('vendetta','return '+built);
+ const main='index-0.1.5.js';fs.writeFileSync(path.join(dir,main),built);fs.writeFileSync(path.join(dir,'index.js'),built);
+ fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({name:'Posting Shortcuts',version:'0.1.5',description:'Manually triggered channel templates with confirmed-send history and cooldown checks. One tap, one channel.',authors:[{name:'Custom plugins'}],main,hash:crypto.createHash('sha256').update(built).digest('hex'),vendetta:{icon:'ic_message_24px'}},null,2));
  console.log('Built docs/posting-shortcuts');
 }

@@ -195,11 +195,110 @@ function createPostingController(port){
 }
 return {isId,messageTime,parseChannel,createPostingController};
 })();
+const postingDepth=(()=>{"use strict";
+function createDepthController(port){
+ const now=port.now || Date.now,setTimer=port.setTimer || setTimeout,clearTimer=port.clearTimer || clearTimeout;
+ const validId=id=>typeof id==='string' && /^\d{1,20}$/.test(id),compare=(a,b)=>a.length-b.length || (a<b?-1:a>b?1:0);
+ const entries=new Map(),listeners=new Set(),pauses=new Map();let active=true,disposed=false,user=null,wanted=[],queue=[],job=null,timer=null,generation=0;
+ function emit(){for(const fn of listeners)fn();}
+ function usable(){return !disposed && active && validId(user) && user===port.getUserId();}
+ function schedule(fn,delay){if(timer!=null)clearTimer(timer);timer=setTimer(()=>{timer=null;fn();},delay);}
+ function cancel(){generation++;if(timer!=null)clearTimer(timer);timer=null;const old=job;job=null;if(old){old.done=true;old.cancel?.();}queue=[];}
+ function view(channelId){
+  const entry=entries.get(channelId);if(!usable() || !entry)return {kind:'unknown',label:'Messages since yours: Unknown'};
+  if(entry.kind==='checking')return {kind:'checking',label:'Messages since yours: Checking…'};
+  if(entry.kind==='ready')return {kind:'ready',count:entry.count,ownId:entry.ownId,checkedAt:entry.checkedAt,label:entry.count+' message'+(entry.count===1?'':'s')+' since yours'};
+  if(entry.kind==='none')return {kind:'none',checkedAt:entry.checkedAt,label:'No message from you found in this channel'};
+  return {kind:'unknown',label:'Messages since yours: Unknown',note:entry.note};
+ }
+ function decode(message,channelId){
+  if(!validId(message?.id) || message.channel_id && message.channel_id!==channelId)throw Error('Invalid channel history');
+  if(message.deleted || (Number(message.flags) & 64) || ['SENDING','SEND_FAILED','sending','send_failed'].includes(message.state))return null;
+  const regular=message.type==null || [0,19].includes(message.type);
+  if(regular && !validId(message.author?.id))throw Error('Message authors unavailable');
+  return {id:message.id,own:regular && message.author?.id===user};
+ }
+ function calculate(entry){
+  let ownId=null;for(const record of entry.records.values())if(record.own && (!ownId || compare(record.id,ownId)>0))ownId=record.id;
+  if(!ownId){if(entry.endReached){entry.kind='none';entry.ownId=null;entry.count=null;entry.checkedAt=now();return true;}return false;}
+  if(!entry.endReached && (!entry.floor || compare(ownId,entry.floor)<0))return false;
+  let count=0;for(const id of entry.records.keys())if(compare(id,ownId)>0)count++;
+  entry.kind='ready';entry.ownId=ownId;entry.count=count;entry.checkedAt=now();return true;
+ }
+ function unknown(entry,note){entry.kind='unknown';entry.note=note;entry.ownId=null;entry.count=null;}
+ function readable(id){try{return !!port.canRead(id);}catch(_){return false;}}
+ function pump(){
+  if(!usable() || job || !queue.length)return;
+  const channelId=queue.shift(),entry=entries.get(channelId),token=generation;if(!entry){pump();return;}
+  if((pauses.get(user) || 0)>now()){unknown(entry,'Discord rate limited the history check; refresh later.');for(const id of queue){const waiting=entries.get(id);if(waiting)unknown(waiting,'Discord rate limited the history check; refresh later.');}queue=[];emit();return;}
+  if(!readable(channelId)){unknown(entry,'History is unavailable for this channel.');emit();schedule(pump,300);return;}
+  const current=job={channelId,entry,token,done:false,cancel:null,events:[],before:null,pages:0};entry.kind='checking';emit();
+  function currentJob(){return !current.done && job===current && token===generation && usable();}
+  function finish(error){
+   if(!currentJob())return;current.done=true;job=null;if(error)current.cancel?.();
+   if(error){unknown(entry,String(error.message || error));if(Number(error.status)===429){const delay=Number(error.body?.retry_after);pauses.set(user,now()+((Number.isFinite(delay)&&delay>0)?delay:60)*1000);for(const id of queue){const waiting=entries.get(id);if(waiting)unknown(waiting,'Discord rate limited the history check; refresh later.');}queue=[];}}
+   emit();if(queue.length)schedule(pump,300);
+  }
+  function page(){
+   if(!currentJob())return;if(!readable(channelId)){finish(Error('History access changed; refresh later.'));return;}
+   try{current.cancel=port.requestHistory(channelId,current.before,(error,response)=>{
+    if(!currentJob())return;if(error){finish(error);return;}if(!readable(channelId)){finish(Error('History access changed; refresh later.'));return;}
+    try{
+     const messages=response?.messages;if(!Array.isArray(messages))throw Error('History response unavailable');
+     let oldest=null;
+     for(const message of messages){
+      if(!validId(message?.id) || current.before && compare(message.id,current.before)>=0)throw Error('History cursor did not advance');
+      if(oldest===null || compare(message.id,oldest)<0)oldest=message.id;
+      if(!entry.maxSeen || compare(message.id,entry.maxSeen)>0)entry.maxSeen=message.id;
+      const record=decode(message,channelId);if(record && !entry.deleted.has(record.id))entry.records.set(record.id,record);
+     }
+     current.pages++;if(oldest && (!entry.floor || compare(oldest,entry.floor)<0))entry.floor=oldest;entry.endReached=messages.length<100;
+     for(const event of current.events){if(event.record){if(!entry.deleted.has(event.record.id))entry.records.set(event.record.id,event.record);}else for(const id of event.ids)entry.records.delete(id);}
+     if(entry.records.size>2000)throw Error('Too many live messages to verify; refresh later.');
+     if(calculate(entry)){finish();return;}
+     if(current.pages>=10)throw Error('Your latest message was not found within 1,000 recent messages.');
+     current.before=oldest;schedule(page,300);
+    }catch(error){finish(error || Error('History could not be verified'));}
+   });}catch(error){finish(error || Error('History request failed'));}
+  }
+  current.fail=finish;page();
+ }
+ function watch(ids){
+  cancel();user=port.getUserId();wanted=[...new Set(ids.filter(validId))].slice(0,6);entries.clear();
+  if(usable())for(const id of wanted)entries.set(id,{kind:'checking',records:new Map(),deleted:new Set(),endReached:false});
+  queue=[...entries.keys()];emit();if(queue.length)schedule(pump,250);
+ }
+ function invalidate(){watch(wanted);}
+ function onCreate(message,optimistic=false){
+  if(!usable() || optimistic)return;const channelId=message?.channel_id,entry=entries.get(channelId);if(!entry)return;
+  let record;try{record=decode(message,channelId);}catch(_){if(job?.channelId===channelId)job.fail(Error('A message event could not be verified; refresh status.'));else{unknown(entry,'A message event could not be verified; refresh status.');emit();}return;}if(!record || entry.deleted.has(record.id))return;
+  const newest=!entry.maxSeen || compare(record.id,entry.maxSeen)>=0;if(newest)entry.maxSeen=record.id;
+  if(job?.channelId===channelId){if(job.events.length<2000)job.events.push({record});else job.fail(Error('Too many live events; refresh status.'));return;}
+  if(entry.kind==='unknown' && record.own && newest){entry.records=new Map([[record.id,record]]);entry.deleted=new Set([...entry.deleted].filter(id=>compare(id,record.id)>0));entry.floor=record.id;entry.endReached=false;calculate(entry);emit();return;}
+  if(!['ready','none'].includes(entry.kind))return;
+  entry.records.set(record.id,record);if(entry.records.size>2000){unknown(entry,'Too many live messages; refresh status.');emit();return;}
+  calculate(entry);emit();
+ }
+ function onDelete(event){
+  if(!usable() || event?.local || event?.optimistic)return;
+  const channelId=event?.channelId || event?.channel_id,entry=entries.get(channelId),raw=event?.ids || event?.messageIds || [event?.id || event?.messageId];
+  if(!entry || !Array.isArray(raw))return;const ids=raw.filter(validId);if(!ids.length)return;for(const id of ids){if(entry.deleted.size>=2000 && !entry.deleted.has(id)){if(job?.channelId===channelId)job.fail(Error('Too many delete events; refresh status.'));else{unknown(entry,'Too many delete events; refresh status.');emit();}return;}entry.deleted.add(id);}
+  if(job?.channelId===channelId){if(job.events.length<2000)job.events.push({ids});else job.fail(Error('Too many live events; refresh status.'));return;}
+  if(!['ready','none'].includes(entry.kind))return;
+  for(const id of ids)entry.records.delete(id);
+  if(!calculate(entry)){entry.kind='checking';entry.records.clear();entry.floor=null;entry.endReached=false;if(!queue.includes(channelId))queue.unshift(channelId);if(!job)schedule(pump,250);}emit();
+ }
+ function setActive(value){active=!!value;watch(wanted);}
+ function dispose(){disposed=true;cancel();entries.clear();listeners.clear();}
+ return {watch,invalidate,onCreate,onDelete,setActive,dispose,view,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);}};
+}
+return {createDepthController};
+})();
 "use strict";
 const {React,ReactNative:RN}=vendetta.metro.common;
 const {createPostingController,parseChannel}=postingCore;
 const h=React.createElement.bind(React);
-let controller=null,enabled=false,foreground=true,users,channels,guilds,permissions,connection,slow,slowUtils,actions,nonce,http,selected,dispatcher,appState,unregister=null;
+let controller=null,depth=null,enabled=false,foreground=true,users,channels,guilds,permissions,connection,slow,slowUtils,actions,nonce,http,selected,dispatcher,appState,unregister=null;
 const subscriptions=[],requests=new Set();
 function toast(message){try{vendetta.ui.toasts.showToast(String(message));}catch(_){}}
 function safe(fn){try{return fn();}catch(error){toast(error?.message || error || 'Action failed');}}
@@ -247,6 +346,10 @@ function requestHistory(channelId,before,callback){
 function sendNative(channelId,content,messageNonce){
  return actions.sendMessage(channelId,{content,tts:false,invalidEmojis:[],validNonShortcutEmojis:[]},false,{nonce:messageNonce,allowedMentions:{parse:[],users:[],roles:[],replied_user:false}});
 }
+function canReadHistory(channelId){
+ try{const channel=channels?.getChannel(channelId),P=vendetta.metro.common.constants?.Permissions;
+ return enabled && foreground && !!connection?.isConnected() && !!channel && P?.READ_MESSAGE_HISTORY!=null && P?.VIEW_CHANNEL!=null && permissions.can(P.VIEW_CHANNEL,channel) && permissions.can(P.READ_MESSAGE_HISTORY,channel);}catch(_){return false;}
+}
 function canReplace(channelId){
  try{const channel=channels?.getChannel(channelId),flag=vendetta.metro.common.constants?.Permissions?.READ_MESSAGE_HISTORY;
  return typeof actions?.deleteMessage==='function' && !!channel && flag!=null && !!permissions?.can(flag,channel);}catch(_){return false;}
@@ -275,12 +378,13 @@ function Dashboard(){
  const checks=React.useRef(0),[,rerender]=React.useState(0),[refreshToken,setRefreshToken]=React.useState(0),[form,setForm]=React.useState(null),[search,setSearch]=React.useState(''),[page,setPage]=React.useState(0),[notice,setNotice]=React.useState('');
  const focused=vendetta.metro.common.NavigationNative?.useIsFocused?.() ?? true;
  const user=currentUser(),userId=user?.id,list=controller?.list() || [],filtered=list.filter(s=>(s.label+' '+describe(s.channelId).title).toLowerCase().includes(search.toLowerCase())),visible=filtered.slice(page*6,page*6+6);
- React.useEffect(()=>{if(!controller)return;return controller.subscribe(()=>rerender(x=>x+1));},[]);
+ React.useEffect(()=>{const stops=[controller?.subscribe(()=>rerender(x=>x+1)),depth?.subscribe(()=>rerender(x=>x+1))];return()=>stops.forEach(stop=>stop?.());},[]);
  const ticking=visible.some(item=>controller?.info(item.channelId).kind==='cooldown') || !!controller?.pending();
  React.useEffect(()=>{if(!enabled || !foreground || !focused)return;const timer=setInterval(()=>rerender(x=>x+1),ticking?1000:60000);return()=>clearInterval(timer);},[focused,foreground,ticking]);
  React.useEffect(()=>{setForm(null);setNotice('');setSearch('');setPage(0);},[userId]);
  React.useEffect(()=>{const last=Math.max(0,Math.ceil(filtered.length/6)-1);if(page>last)setPage(last);},[filtered.length,page]);
  const visibleKey=visible.map(s=>s.channelId).join(',');
+ React.useEffect(()=>{depth?.watch(enabled && foreground && focused?visible.map(item=>item.channelId):[]);return()=>depth?.watch([]);},[visibleKey,userId,focused,foreground,refreshToken]);
  React.useEffect(()=>{const generation=++checks.current;let index=0;function next(){if(generation!==checks.current || !enabled || !foreground || !focused || index>=visible.length)return;const item=visible[index++];controller.verify(item.channelId,()=>next());}next();return()=>{checks.current++;};},[visibleKey,userId,focused,foreground,refreshToken]);
  function edit(item){setNotice('');setForm(item?{...item}:{id:null,label:'',channelId:selected?.getChannelId() || '',template:list[list.length-1]?.template || ''});}
  function editAll(){setNotice('');setForm({mode:'all',userId,template:list.length && list.every(item=>item.template===list[0].template)?list[0].template:''});}
@@ -312,17 +416,20 @@ function Dashboard(){
  }
  children.push(field('FIND A SHORTCUT',search,value=>{setSearch(value);setPage(0);},{placeholder:'Server, channel, or shortcut name'}));
  // Hermes eval does not isolate captured for-of bindings; callback parameters own each card.
- visible.forEach(item=>{const status=controller.info(item.channelId),ready=status.kind==='ready',history=controller.history(item.channelId),destination=describe(item.channelId);
+ visible.forEach(item=>{const status=controller.info(item.channelId),ready=status.kind==='ready',history=controller.history(item.channelId),destination=describe(item.channelId),depthState=depth?.view(item.channelId) || {label:'Messages since yours: Unknown'};
   children.push(h(RN.View,{key:item.id,style:{backgroundColor:color.card,borderWidth:1,borderColor:color.line,borderRadius:17,padding:16,marginTop:14}},
    text(item.label,{fontWeight:'700',fontSize:18}),text(destination.title,{fontSize:13,color:color.accent,marginTop:3}),text(item.template,{color:'#d6d8e1',marginTop:12}),
    text(status.kind==='cooldown'?status.reason+' · '+duration(status.until-Date.now())+' left':status.label,{color:ready?color.green:color.muted,fontWeight:'600',marginTop:13}),
    text('Last template: '+dateLabel(history.lastTemplateAt),{fontSize:12,lineHeight:18,color:color.muted,marginTop:5}),
+   text(depthState.label,{fontSize:14,color:color.accent,marginTop:7}),
+   depthState.checkedAt?text('Checked '+new Date(depthState.checkedAt).toLocaleTimeString(),{fontSize:11,color:color.muted}):null,
+   depthState.note?text(depthState.note,{fontSize:12,lineHeight:18,color:color.muted}):null,
    history.replacement?text(history.replacement.note,{fontSize:12,lineHeight:18,color:history.replacement.status==='failed'?color.red:color.muted,marginTop:5}):null,
    h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button(status.kind==='unknown'?'Check & send':'Send template',()=>send(item),!enabled || !['ready','unknown'].includes(status.kind),'primary'),button('Send & replace',()=>send(item,true),!enabled || !['ready','unknown'].includes(status.kind)),button('Open',()=>safe(()=>openChannel(item.channelId))),button('Edit',()=>edit(item),!!pending),button('Remove',()=>safe(()=>{controller.remove(item.id);setNotice('Shortcut removed.');}),!!pending))));
  });
  if(!list.length)children.push(text('Save a channel and a template to get started. You can also open this dashboard with /postingshortcuts.',{color:color.muted,marginTop:20}));
  if(filtered.length>6)children.push(h(RN.View,{key:'pages',style:{flexDirection:'row',alignItems:'center',marginTop:16}},button('Previous',()=>setPage(page-1),page===0),text((page+1)+' / '+Math.ceil(filtered.length/6)),button('Next',()=>setPage(page+1),(page+1)*6>=filtered.length)));
- children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.4',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
+ children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.5',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
  return h(RN.ScrollView,{style:{backgroundColor:color.bg,flex:1},contentContainerStyle:{padding:18,paddingBottom:30},keyboardShouldPersistTaps:'handled'},...children);
 }
 return {
@@ -338,12 +445,13 @@ return {
   if(missing.length){const message='Unavailable native hooks: '+missing.join(', ');RN.Alert?.alert('Posting Shortcuts could not start',message);throw Error('Posting Shortcuts: '+message);}
   foreground=!['background','inactive'].includes(RN.AppState?.currentState);enabled=true;
   controller=createPostingController({storage:vendetta.plugin.storage,getUserId:()=>currentUser()?.id,getChannel:id=>channels.getChannel(id),validateChannel:id=>gate(id,false),gate,requestHistory,sendNative,deleteNative,canReplace,createNonce:()=>nonce.createNonce(),notify:toast});controller.setActive(foreground);
-  const handlers={MESSAGE_DELETE:event=>safe(()=>controller.onDelete(event)),MESSAGE_DELETE_BULK:event=>safe(()=>controller.onDelete(event)),MESSAGE_CREATE:event=>safe(()=>controller.onMessage(event.message || event,!!event.optimistic)),MESSAGE_SEND_FAILED:event=>safe(()=>controller.onFailure(event)),MESSAGE_SEND_FAILED_AUTOMOD:event=>safe(()=>controller.onFailure({channelId:event.messageData?.message?.channelId,messageId:event.messageData?.message?.nonce,reason:event.errorResponseBody?.message || 'Discord blocked the message'})),CHANNEL_UPDATES:()=>controller.invalidate(),CONNECTION_OPEN:()=>controller.invalidate(),CONNECTION_CLOSED:()=>controller.invalidate(),CURRENT_USER_UPDATE:()=>controller.invalidate(),LOGOUT:()=>controller.invalidate(),SLOWMODE_SET_COOLDOWN:()=>controller.refresh(),SLOWMODE_RESET_COOLDOWN:()=>controller.refresh()};
+  depth=postingDepth.createDepthController({getUserId:()=>currentUser()?.id,canRead:canReadHistory,requestHistory});depth.setActive(foreground);
+  const handlers={MESSAGE_DELETE:event=>{safe(()=>depth.onDelete(event));safe(()=>controller.onDelete(event));},MESSAGE_DELETE_BULK:event=>{safe(()=>depth.onDelete(event));safe(()=>controller.onDelete(event));},MESSAGE_CREATE:event=>{safe(()=>depth.onCreate(event.message || event,!!event.optimistic));safe(()=>controller.onMessage(event.message || event,!!event.optimistic));},MESSAGE_SEND_FAILED:event=>safe(()=>controller.onFailure(event)),MESSAGE_SEND_FAILED_AUTOMOD:event=>safe(()=>controller.onFailure({channelId:event.messageData?.message?.channelId,messageId:event.messageData?.message?.nonce,reason:event.errorResponseBody?.message || 'Discord blocked the message'})),CHANNEL_UPDATES:()=>{controller.invalidate();depth.invalidate();},CONNECTION_OPEN:()=>{controller.invalidate();depth.invalidate();},CONNECTION_CLOSED:()=>{controller.invalidate();depth.invalidate();},CURRENT_USER_UPDATE:()=>{controller.invalidate();depth.invalidate();},LOGOUT:()=>{controller.invalidate();depth.invalidate();},SLOWMODE_SET_COOLDOWN:()=>controller.refresh(),SLOWMODE_RESET_COOLDOWN:()=>controller.refresh()};
   for(const [type,fn]of Object.entries(handlers)){dispatcher.subscribe(type,fn);subscriptions.push([type,fn]);}
-  appState=RN.AppState?.addEventListener('change',state=>{foreground=state==='active';controller.setActive(foreground);});
+  appState=RN.AppState?.addEventListener('change',state=>{foreground=state==='active';controller.setActive(foreground);depth.setActive(foreground);});
   try{unregister=vendetta.commands?.registerCommand({name:'postingshortcuts',description:'Open your saved channel templates',options:[],execute(){safe(openDashboard);return undefined;}});}catch(_){toast('Open Posting Shortcuts through plugin settings');}
  },
- onUnload(){enabled=false;const cleanup=[()=>unregister?.(),()=>appState?.remove(),()=>controller?.dispose(),...[...requests].map(request=>()=>request.cancel()),...subscriptions.splice(0).map(([type,fn])=>()=>dispatcher.unsubscribe(type,fn))];for(const stop of cleanup)try{stop();}catch(_){}unregister=null;appState=null;},
+ onUnload(){enabled=false;const cleanup=[()=>unregister?.(),()=>appState?.remove(),()=>depth?.dispose(),()=>controller?.dispose(),...[...requests].map(request=>()=>request.cancel()),...subscriptions.splice(0).map(([type,fn])=>()=>dispatcher.unsubscribe(type,fn))];for(const stop of cleanup)try{stop();}catch(_){}unregister=null;appState=null;},
  settings:Dashboard
 };
 

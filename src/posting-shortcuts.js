@@ -2,7 +2,7 @@
 const {React,ReactNative:RN}=vendetta.metro.common;
 const {createPostingController,parseChannel}=postingCore;
 const h=React.createElement.bind(React);
-let controller=null,enabled=false,foreground=true,users,channels,guilds,permissions,connection,slow,slowUtils,actions,nonce,http,selected,dispatcher,appState,unregister=null;
+let controller=null,depth=null,enabled=false,foreground=true,users,channels,guilds,permissions,connection,slow,slowUtils,actions,nonce,http,selected,dispatcher,appState,unregister=null;
 const subscriptions=[],requests=new Set();
 function toast(message){try{vendetta.ui.toasts.showToast(String(message));}catch(_){}}
 function safe(fn){try{return fn();}catch(error){toast(error?.message || error || 'Action failed');}}
@@ -50,6 +50,10 @@ function requestHistory(channelId,before,callback){
 function sendNative(channelId,content,messageNonce){
  return actions.sendMessage(channelId,{content,tts:false,invalidEmojis:[],validNonShortcutEmojis:[]},false,{nonce:messageNonce,allowedMentions:{parse:[],users:[],roles:[],replied_user:false}});
 }
+function canReadHistory(channelId){
+ try{const channel=channels?.getChannel(channelId),P=vendetta.metro.common.constants?.Permissions;
+ return enabled && foreground && !!connection?.isConnected() && !!channel && P?.READ_MESSAGE_HISTORY!=null && P?.VIEW_CHANNEL!=null && permissions.can(P.VIEW_CHANNEL,channel) && permissions.can(P.READ_MESSAGE_HISTORY,channel);}catch(_){return false;}
+}
 function canReplace(channelId){
  try{const channel=channels?.getChannel(channelId),flag=vendetta.metro.common.constants?.Permissions?.READ_MESSAGE_HISTORY;
  return typeof actions?.deleteMessage==='function' && !!channel && flag!=null && !!permissions?.can(flag,channel);}catch(_){return false;}
@@ -78,12 +82,13 @@ function Dashboard(){
  const checks=React.useRef(0),[,rerender]=React.useState(0),[refreshToken,setRefreshToken]=React.useState(0),[form,setForm]=React.useState(null),[search,setSearch]=React.useState(''),[page,setPage]=React.useState(0),[notice,setNotice]=React.useState('');
  const focused=vendetta.metro.common.NavigationNative?.useIsFocused?.() ?? true;
  const user=currentUser(),userId=user?.id,list=controller?.list() || [],filtered=list.filter(s=>(s.label+' '+describe(s.channelId).title).toLowerCase().includes(search.toLowerCase())),visible=filtered.slice(page*6,page*6+6);
- React.useEffect(()=>{if(!controller)return;return controller.subscribe(()=>rerender(x=>x+1));},[]);
+ React.useEffect(()=>{const stops=[controller?.subscribe(()=>rerender(x=>x+1)),depth?.subscribe(()=>rerender(x=>x+1))];return()=>stops.forEach(stop=>stop?.());},[]);
  const ticking=visible.some(item=>controller?.info(item.channelId).kind==='cooldown') || !!controller?.pending();
  React.useEffect(()=>{if(!enabled || !foreground || !focused)return;const timer=setInterval(()=>rerender(x=>x+1),ticking?1000:60000);return()=>clearInterval(timer);},[focused,foreground,ticking]);
  React.useEffect(()=>{setForm(null);setNotice('');setSearch('');setPage(0);},[userId]);
  React.useEffect(()=>{const last=Math.max(0,Math.ceil(filtered.length/6)-1);if(page>last)setPage(last);},[filtered.length,page]);
  const visibleKey=visible.map(s=>s.channelId).join(',');
+ React.useEffect(()=>{depth?.watch(enabled && foreground && focused?visible.map(item=>item.channelId):[]);return()=>depth?.watch([]);},[visibleKey,userId,focused,foreground,refreshToken]);
  React.useEffect(()=>{const generation=++checks.current;let index=0;function next(){if(generation!==checks.current || !enabled || !foreground || !focused || index>=visible.length)return;const item=visible[index++];controller.verify(item.channelId,()=>next());}next();return()=>{checks.current++;};},[visibleKey,userId,focused,foreground,refreshToken]);
  function edit(item){setNotice('');setForm(item?{...item}:{id:null,label:'',channelId:selected?.getChannelId() || '',template:list[list.length-1]?.template || ''});}
  function editAll(){setNotice('');setForm({mode:'all',userId,template:list.length && list.every(item=>item.template===list[0].template)?list[0].template:''});}
@@ -115,17 +120,20 @@ function Dashboard(){
  }
  children.push(field('FIND A SHORTCUT',search,value=>{setSearch(value);setPage(0);},{placeholder:'Server, channel, or shortcut name'}));
  // Hermes eval does not isolate captured for-of bindings; callback parameters own each card.
- visible.forEach(item=>{const status=controller.info(item.channelId),ready=status.kind==='ready',history=controller.history(item.channelId),destination=describe(item.channelId);
+ visible.forEach(item=>{const status=controller.info(item.channelId),ready=status.kind==='ready',history=controller.history(item.channelId),destination=describe(item.channelId),depthState=depth?.view(item.channelId) || {label:'Messages since yours: Unknown'};
   children.push(h(RN.View,{key:item.id,style:{backgroundColor:color.card,borderWidth:1,borderColor:color.line,borderRadius:17,padding:16,marginTop:14}},
    text(item.label,{fontWeight:'700',fontSize:18}),text(destination.title,{fontSize:13,color:color.accent,marginTop:3}),text(item.template,{color:'#d6d8e1',marginTop:12}),
    text(status.kind==='cooldown'?status.reason+' · '+duration(status.until-Date.now())+' left':status.label,{color:ready?color.green:color.muted,fontWeight:'600',marginTop:13}),
    text('Last template: '+dateLabel(history.lastTemplateAt),{fontSize:12,lineHeight:18,color:color.muted,marginTop:5}),
+   text(depthState.label,{fontSize:14,color:color.accent,marginTop:7}),
+   depthState.checkedAt?text('Checked '+new Date(depthState.checkedAt).toLocaleTimeString(),{fontSize:11,color:color.muted}):null,
+   depthState.note?text(depthState.note,{fontSize:12,lineHeight:18,color:color.muted}):null,
    history.replacement?text(history.replacement.note,{fontSize:12,lineHeight:18,color:history.replacement.status==='failed'?color.red:color.muted,marginTop:5}):null,
    h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button(status.kind==='unknown'?'Check & send':'Send template',()=>send(item),!enabled || !['ready','unknown'].includes(status.kind),'primary'),button('Send & replace',()=>send(item,true),!enabled || !['ready','unknown'].includes(status.kind)),button('Open',()=>safe(()=>openChannel(item.channelId))),button('Edit',()=>edit(item),!!pending),button('Remove',()=>safe(()=>{controller.remove(item.id);setNotice('Shortcut removed.');}),!!pending))));
  });
  if(!list.length)children.push(text('Save a channel and a template to get started. You can also open this dashboard with /postingshortcuts.',{color:color.muted,marginTop:20}));
  if(filtered.length>6)children.push(h(RN.View,{key:'pages',style:{flexDirection:'row',alignItems:'center',marginTop:16}},button('Previous',()=>setPage(page-1),page===0),text((page+1)+' / '+Math.ceil(filtered.length/6)),button('Next',()=>setPage(page+1),(page+1)*6>=filtered.length)));
- children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.4',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
+ children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.5',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
  return h(RN.ScrollView,{style:{backgroundColor:color.bg,flex:1},contentContainerStyle:{padding:18,paddingBottom:30},keyboardShouldPersistTaps:'handled'},...children);
 }
 return {
@@ -141,11 +149,12 @@ return {
   if(missing.length){const message='Unavailable native hooks: '+missing.join(', ');RN.Alert?.alert('Posting Shortcuts could not start',message);throw Error('Posting Shortcuts: '+message);}
   foreground=!['background','inactive'].includes(RN.AppState?.currentState);enabled=true;
   controller=createPostingController({storage:vendetta.plugin.storage,getUserId:()=>currentUser()?.id,getChannel:id=>channels.getChannel(id),validateChannel:id=>gate(id,false),gate,requestHistory,sendNative,deleteNative,canReplace,createNonce:()=>nonce.createNonce(),notify:toast});controller.setActive(foreground);
-  const handlers={MESSAGE_DELETE:event=>safe(()=>controller.onDelete(event)),MESSAGE_DELETE_BULK:event=>safe(()=>controller.onDelete(event)),MESSAGE_CREATE:event=>safe(()=>controller.onMessage(event.message || event,!!event.optimistic)),MESSAGE_SEND_FAILED:event=>safe(()=>controller.onFailure(event)),MESSAGE_SEND_FAILED_AUTOMOD:event=>safe(()=>controller.onFailure({channelId:event.messageData?.message?.channelId,messageId:event.messageData?.message?.nonce,reason:event.errorResponseBody?.message || 'Discord blocked the message'})),CHANNEL_UPDATES:()=>controller.invalidate(),CONNECTION_OPEN:()=>controller.invalidate(),CONNECTION_CLOSED:()=>controller.invalidate(),CURRENT_USER_UPDATE:()=>controller.invalidate(),LOGOUT:()=>controller.invalidate(),SLOWMODE_SET_COOLDOWN:()=>controller.refresh(),SLOWMODE_RESET_COOLDOWN:()=>controller.refresh()};
+  depth=postingDepth.createDepthController({getUserId:()=>currentUser()?.id,canRead:canReadHistory,requestHistory});depth.setActive(foreground);
+  const handlers={MESSAGE_DELETE:event=>{safe(()=>depth.onDelete(event));safe(()=>controller.onDelete(event));},MESSAGE_DELETE_BULK:event=>{safe(()=>depth.onDelete(event));safe(()=>controller.onDelete(event));},MESSAGE_CREATE:event=>{safe(()=>depth.onCreate(event.message || event,!!event.optimistic));safe(()=>controller.onMessage(event.message || event,!!event.optimistic));},MESSAGE_SEND_FAILED:event=>safe(()=>controller.onFailure(event)),MESSAGE_SEND_FAILED_AUTOMOD:event=>safe(()=>controller.onFailure({channelId:event.messageData?.message?.channelId,messageId:event.messageData?.message?.nonce,reason:event.errorResponseBody?.message || 'Discord blocked the message'})),CHANNEL_UPDATES:()=>{controller.invalidate();depth.invalidate();},CONNECTION_OPEN:()=>{controller.invalidate();depth.invalidate();},CONNECTION_CLOSED:()=>{controller.invalidate();depth.invalidate();},CURRENT_USER_UPDATE:()=>{controller.invalidate();depth.invalidate();},LOGOUT:()=>{controller.invalidate();depth.invalidate();},SLOWMODE_SET_COOLDOWN:()=>controller.refresh(),SLOWMODE_RESET_COOLDOWN:()=>controller.refresh()};
   for(const [type,fn]of Object.entries(handlers)){dispatcher.subscribe(type,fn);subscriptions.push([type,fn]);}
-  appState=RN.AppState?.addEventListener('change',state=>{foreground=state==='active';controller.setActive(foreground);});
+  appState=RN.AppState?.addEventListener('change',state=>{foreground=state==='active';controller.setActive(foreground);depth.setActive(foreground);});
   try{unregister=vendetta.commands?.registerCommand({name:'postingshortcuts',description:'Open your saved channel templates',options:[],execute(){safe(openDashboard);return undefined;}});}catch(_){toast('Open Posting Shortcuts through plugin settings');}
  },
- onUnload(){enabled=false;const cleanup=[()=>unregister?.(),()=>appState?.remove(),()=>controller?.dispose(),...[...requests].map(request=>()=>request.cancel()),...subscriptions.splice(0).map(([type,fn])=>()=>dispatcher.unsubscribe(type,fn))];for(const stop of cleanup)try{stop();}catch(_){}unregister=null;appState=null;},
+ onUnload(){enabled=false;const cleanup=[()=>unregister?.(),()=>appState?.remove(),()=>depth?.dispose(),()=>controller?.dispose(),...[...requests].map(request=>()=>request.cancel()),...subscriptions.splice(0).map(([type,fn])=>()=>dispatcher.unsubscribe(type,fn))];for(const stop of cleanup)try{stop();}catch(_){}unregister=null;appState=null;},
  settings:Dashboard
 };
