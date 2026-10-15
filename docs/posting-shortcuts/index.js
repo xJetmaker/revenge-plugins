@@ -237,16 +237,17 @@ function Dashboard(){
    h(RN.View,{style:{flexDirection:'row'}},button('Save shortcut',()=>safe(()=>{controller.save(form);setForm(null);setNotice('Shortcut saved on this phone.');RN.Keyboard?.dismiss();}),!enabled,'primary'),button('Cancel',()=>setForm(null)))));
  }
  children.push(field('FIND A SHORTCUT',search,value=>{setSearch(value);setPage(0);},{placeholder:'Server, channel, or shortcut name'}));
- for(const item of visible){const status=controller.info(item.channelId),ready=status.kind==='ready',history=controller.history(item.channelId),destination=describe(item.channelId);
+ // Hermes eval does not isolate captured for-of bindings; callback parameters own each card.
+ visible.forEach(item=>{const status=controller.info(item.channelId),ready=status.kind==='ready',history=controller.history(item.channelId),destination=describe(item.channelId);
   children.push(h(RN.View,{key:item.id,style:{backgroundColor:color.card,borderWidth:1,borderColor:color.line,borderRadius:17,padding:16,marginTop:14}},
    text(item.label,{fontWeight:'700',fontSize:18}),text(destination.title,{fontSize:13,color:color.accent,marginTop:3}),text(item.template,{color:'#d6d8e1',marginTop:12}),
    text(status.kind==='cooldown'?status.reason+' · '+duration(status.until-Date.now())+' left':status.label,{color:ready?color.green:color.muted,fontWeight:'600',marginTop:13}),
    text('Last template: '+dateLabel(history.lastTemplateAt),{fontSize:12,lineHeight:18,color:color.muted,marginTop:5}),
    h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button(ready?'Send template':status.kind==='unknown'?'Check & send':'Send template',()=>send(item),!enabled || !['ready','unknown'].includes(status.kind),'primary'),button('Open',()=>safe(()=>openChannel(item.channelId))),button('Edit',()=>edit(item),!!pending),button('Remove',()=>safe(()=>{controller.remove(item.id);setNotice('Shortcut removed.');}),!!pending))));
- }
+ });
  if(!list.length)children.push(text('Save a channel and a template to get started. You can also open this dashboard with /postingshortcuts.',{color:color.muted,marginTop:20}));
  if(filtered.length>6)children.push(h(RN.View,{key:'pages',style:{flexDirection:'row',alignItems:'center',marginTop:16}},button('Previous',()=>setPage(page-1),page===0),text((page+1)+' / '+Math.ceil(filtered.length/6)),button('Next',()=>setPage(page+1),(page+1)*6>=filtered.length)));
- children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.0',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
+ children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.1',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
  return h(RN.ScrollView,{style:{backgroundColor:color.bg,flex:1},contentContainerStyle:{padding:18,paddingBottom:30},keyboardShouldPersistTaps:'handled'},...children);
 }
 return {
