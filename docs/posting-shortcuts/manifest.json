@@ -1,14 +1,14 @@
 {
   "name": "Posting Shortcuts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Manually triggered channel templates with confirmed-send history and cooldown checks. One tap, one channel.",
   "authors": [
     {
       "name": "Custom plugins"
     }
   ],
-  "main": "index-0.1.1.js",
-  "hash": "2b9a27545490b4cb1eadbda1e9bca2d82df1873b72972a38401a931f390234c1",
+  "main": "index-0.1.2.js",
+  "hash": "7b0a6a9e8cc51255d2ed457df1cf00d2c6ba36cb2bbd76881dc733568174980e",
   "vendetta": {
     "icon": "ic_message_24px"
   }

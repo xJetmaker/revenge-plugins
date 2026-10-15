@@ -40,6 +40,16 @@ function createPostingController(port){
   const item={id:input.id || 'shortcut-'+now()+'-'+(++serial),channelId,label,template};
   commit(user,next=>{const index=next.shortcuts.findIndex(s=>s.id===item.id);index<0?next.shortcuts.push(item):next.shortcuts.splice(index,1,item);});return item;
  }
+ function replaceTemplates(value,expectedUser=uid()){
+  const user=uid();if(!user || user!==expectedUser)throw Error('Account changed; reopen the template editor');
+  if(disposed || !active)throw Error('App is not active');
+  const template=String(value || '').trim(),a=account(user);
+  if(!template || template.length>2000)throw Error('Template must contain 1–2,000 characters');
+  if(a.pending)throw Error('Review or wait for the previous send before changing all templates');
+  if(!a.shortcuts.length)throw Error('Add a shortcut first');
+  const count=a.shortcuts.length;
+  commit(user,next=>{next.shortcuts=next.shortcuts.map(item=>({...item,template}));});return count;
+ }
  function remove(id){const user=uid();if(account(user).pending?.shortcutId===id)throw Error('Review the pending attempt first');commit(user,a=>{a.shortcuts=a.shortcuts.filter(s=>s.id!==id);});}
  function verify(channelId,callback=()=>{}){
   const user=uid(),g=gate(channelId),k=key(user,channelId);
@@ -129,6 +139,6 @@ function createPostingController(port){
  function dispose(){disposed=true;active=false;try{invalidate();}finally{for(const timer of timers)clearTimer(timer);timers.clear();pendingTimers.clear();listeners.clear();}}
  // Surviving attempts cannot be silently resent after a restart.
  for(const user of Object.keys(state.accounts))if(state.accounts[user].pending){commit(user,a=>{if(a.pending.status==='checking')a.pending=null;else{a.pending.status='uncertain';a.pending.note='Previous send needs review after restart.';}});}
- return {save,remove,verify,press,onMessage,onFailure,clearPending,info,pending,invalidate,setActive,dispose,refresh:emit,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},list:()=>copy(account().shortcuts),history:channelId=>copy(account().history[channelId] || {})};
+ return {save,replaceTemplates,remove,verify,press,onMessage,onFailure,clearPending,info,pending,invalidate,setActive,dispose,refresh:emit,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},list:()=>copy(account().shortcuts),history:channelId=>copy(account().history[channelId] || {})};
 }
 module.exports={isId,messageTime,parseChannel,createPostingController};

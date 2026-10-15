@@ -162,3 +162,8 @@ Implementation references: local classic Revenge source at revision `1b1d297` (p
 ### Posting Shortcuts 0.1.1
 
 Fixes shortcut actions selecting the last card instead of the tapped card under Hermes eval. The issue was reproduced against the 0.1.0 release in the official Hermes CLI: tapping Edit on Shortcut 1 opened Shortcut 2. Captured `for...of` bindings were shared by the card callbacks in this runtime; card construction now uses a function invocation with its own item parameter. The same fix covers Edit, Open, Send and Remove. Existing shortcuts and templates are preserved. Multiple-card Node and Hermes regressions verify opening each editor, saving only the selected template, navigating/sending to each correct channel and removing only the selected card. Refetch the plugin and reload Discord to receive the versioned 0.1.1 bundle.
+
+
+### Posting Shortcuts 0.1.2
+
+Adds Change all templates to the dashboard. Enter a message and choose Apply to all shortcuts to replace the template in every shortcut for the current account, including those hidden by search or pagination. The update is a single local storage write; names, channel IDs, shortcut IDs, other accounts and confirmed send history are preserved. Cancel makes no changes. Templates retain the 1–2,000 character limit; account changes or pending send attempts block the operation. This action only updates saved templates and sends no messages. Refetch and reload Discord for the versioned 0.1.2 bundle.

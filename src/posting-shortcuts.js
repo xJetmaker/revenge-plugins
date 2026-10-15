@@ -81,16 +81,23 @@ function Dashboard(){
  const visibleKey=visible.map(s=>s.channelId).join(',');
  React.useEffect(()=>{const generation=++checks.current;let index=0;function next(){if(generation!==checks.current || !enabled || !foreground || !focused || index>=visible.length)return;const item=visible[index++];controller.verify(item.channelId,()=>next());}next();return()=>{checks.current++;};},[visibleKey,userId,focused,foreground,refreshToken]);
  function edit(item){setNotice('');setForm(item?{...item}:{id:null,label:'',channelId:selected?.getChannelId() || '',template:list[list.length-1]?.template || ''});}
+ function editAll(){setNotice('');setForm({mode:'all',userId,template:list.length && list.every(item=>item.template===list[0].template)?list[0].template:''});}
  function send(item,repeatApproved=false){safe(()=>controller.press(item.id,{repeatApproved},(error,result)=>{
   if(error){setNotice(error.message || String(error));return;}
   if(result?.needsRepeatConfirmation){RN.Alert.alert('Send this template again?',describe(item.channelId).title+'\n\nThe same template was confirmed here less than 10 minutes ago.',[{text:'Cancel',style:'cancel'},{text:'Send again',onPress:()=>send(item,true)}]);return;}
   if(result?.started)setNotice('');
  }));}
  function review(){const p=controller.pending();if(!p)return;RN.Alert.alert('Review the previous send',p.note || 'No confirmed result yet.',[{text:'Keep locked',style:'cancel'},{text:'Open channel',onPress:()=>safe(()=>openChannel(p.channelId))},{text:'I checked — clear lock',style:'destructive',onPress:()=>safe(()=>{controller.clearPending();setNotice('Lock cleared. Nothing was resent.');})}]);}
- const children=[h(RN.View,{key:'header',style:{marginBottom:20}},text('Posting Shortcuts',{fontSize:27,lineHeight:34,fontWeight:'700'}),text(user?'Sending as '+(user.globalName || user.username || userId):'Sign in to Discord',{color:color.muted,marginTop:5}),text('One tap sends one template to its saved channel.',{fontSize:13,color:color.muted,marginTop:10}),h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button('Add shortcut',()=>edit(null),!enabled,'primary'),button('Refresh status',()=>{checks.current++;controller?.invalidate();setRefreshToken(x=>x+1);},!enabled))),
+ const children=[h(RN.View,{key:'header',style:{marginBottom:20}},text('Posting Shortcuts',{fontSize:27,lineHeight:34,fontWeight:'700'}),text(user?'Sending as '+(user.globalName || user.username || userId):'Sign in to Discord',{color:color.muted,marginTop:5}),text('One tap sends one template to its saved channel.',{fontSize:13,color:color.muted,marginTop:10}),h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button('Add shortcut',()=>edit(null),!enabled,'primary'),button('Change all templates',editAll,!enabled || !list.length || !!controller?.pending()),button('Refresh status',()=>{checks.current++;controller?.invalidate();setRefreshToken(x=>x+1);},!enabled))),
   notice?text(notice,{color:color.accent,marginBottom:14}):null];
  const pending=controller?.pending();if(pending)children.push(h(RN.View,{key:'pending',style:{backgroundColor:'#342c24',padding:15,borderRadius:14,marginBottom:16}},text(pending.status==='checking'?'Checking before sending…':pending.status==='sending'?'Sending — waiting for confirmation':'Previous attempt needs review',{fontWeight:'600'}),text(describe(pending.channelId).title,{color:color.muted,fontSize:13}),button('Review attempt',review,pending.status==='sending' || pending.status==='checking')));
- if(form){
+ if(form?.mode==='all'){
+  children.push(h(RN.View,{key:'bulk-editor',style:{backgroundColor:color.card,borderRadius:18,padding:16,marginBottom:18}},text('Change all templates',{fontSize:19,fontWeight:'700'}),
+   text('Replace the message in all '+list.length+' shortcuts for this account, including shortcuts on other pages. Names, channels and send history stay the same.',{color:color.muted,fontSize:13,marginTop:8}),
+   field('NEW MESSAGE FOR EVERY SHORTCUT',form.template,value=>setForm({...form,template:value}),{multiline:true,maxLength:2000,placeholder:'New message for every shortcut',textAlignVertical:'top',style:{backgroundColor:color.input,borderWidth:1,borderColor:color.line,borderRadius:10,color:color.text,fontSize:15,padding:12,minHeight:130}}),
+   text(form.template.length+'/2000',{fontSize:12,color:color.muted,marginTop:6}),
+   h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button('Apply to all shortcuts',()=>safe(()=>{const count=controller.replaceTemplates(form.template,form.userId);setForm(null);setNotice('Updated templates in '+count+' shortcuts.');RN.Keyboard?.dismiss();}),!enabled || !form.template.trim() || !!controller?.pending(),'primary'),button('Cancel',()=>setForm(null)))));
+ }else if(form){
   const channelId=parseChannel(form.channelId),destination=channelId?describe(channelId):null;
   children.push(h(RN.View,{key:'editor',style:{backgroundColor:color.card,borderRadius:18,padding:16,marginBottom:18}},text(form.id?'Edit shortcut':'New shortcut',{fontSize:19,fontWeight:'700'}),
    field('NAME',form.label,value=>setForm({...form,label:value}),{maxLength:60,placeholder:'My DM request channel'}),
@@ -112,7 +119,7 @@ function Dashboard(){
  });
  if(!list.length)children.push(text('Save a channel and a template to get started. You can also open this dashboard with /postingshortcuts.',{color:color.muted,marginTop:20}));
  if(filtered.length>6)children.push(h(RN.View,{key:'pages',style:{flexDirection:'row',alignItems:'center',marginTop:16}},button('Previous',()=>setPage(page-1),page===0),text((page+1)+' / '+Math.ceil(filtered.length/6)),button('Next',()=>setPage(page+1),(page+1)*6>=filtered.length)));
- children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.1',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
+ children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.2',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
  return h(RN.ScrollView,{style:{backgroundColor:color.bg,flex:1},contentContainerStyle:{padding:18,paddingBottom:30},keyboardShouldPersistTaps:'handled'},...children);
 }
 return {
