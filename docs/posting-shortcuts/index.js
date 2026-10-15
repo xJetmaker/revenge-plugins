@@ -37,7 +37,7 @@ function createPostingController(port){
   if(!input.id && a.shortcuts.length>=50)throw Error('This version supports 50 shortcuts per account');
   if(a.shortcuts.some(s=>s.channelId===channelId && s.id!==input.id))throw Error('A shortcut for this channel already exists; edit that shortcut');
   if(input.id && !a.shortcuts.some(s=>s.id===input.id))throw Error('Shortcut no longer exists');
-  const item={id:input.id || 'shortcut-'+now()+'-'+(++serial),channelId,label,template,replaceLast:!!input.replaceLast};
+  const item={id:input.id || 'shortcut-'+now()+'-'+(++serial),channelId,label,template};
   commit(user,next=>{const index=next.shortcuts.findIndex(s=>s.id===item.id);index<0?next.shortcuts.push(item):next.shortcuts.splice(index,1,item);});return item;
  }
  function replaceTemplates(value,expectedUser=uid()){
@@ -114,14 +114,14 @@ function createPostingController(port){
   page();
  }
  function press(id,options={},callback=()=>{}){
-  const user=uid(),shortcut=getShortcut(id);if(!shortcut){callback(Error('Shortcut no longer exists'));return;}
+  const user=uid(),shortcut=getShortcut(id),replaceLast=options.replaceLast===true;if(!shortcut){callback(Error('Shortcut no longer exists'));return;}
   const a=account(user),g=gate(shortcut.channelId);if(!g.ok){callback(Error(g.reason));return;}
   if(a.pending){callback(Error('Review or wait for the previous send first'));return;}
   if(a.blockedUntil>now()){callback(Error('Discord rate limit: wait before sending'));return;}
-  if(shortcut.replaceLast && (typeof port.deleteNative!=='function' || port.canReplace?.(shortcut.channelId)===false)){callback(Error('Replacement needs Discord’s delete action and access to message history'));return;}
+  if(replaceLast && (typeof port.deleteNative!=='function' || port.canReplace?.(shortcut.channelId)===false)){callback(Error('Replacement needs Discord’s delete action and access to message history'));return;}
   const old=a.history[shortcut.channelId];
   if(!options.repeatApproved && old?.lastTemplate===shortcut.template && now()-old.lastTemplateAt<600000){callback(null,{needsRepeatConfirmation:true});return;}
-  commit(user,next=>{next.pending={status:'checking',shortcutId:id,channelId:shortcut.channelId,content:shortcut.template,replaceLast:!!shortcut.replaceLast,startedAt:now(),nonce:null};});
+  commit(user,next=>{next.pending={status:'checking',shortcutId:id,channelId:shortcut.channelId,content:shortcut.template,replaceLast,startedAt:now(),nonce:null};});
   function abort(error){if(account(user).pending?.status==='checking')commit(user,next=>{next.pending=null;});callback(error);}
   verify(shortcut.channelId,(error,proof)=>{
    if(!validUser(user)){abort(Error('Account or app changed'));return;}
@@ -129,18 +129,18 @@ function createPostingController(port){
    function dispatch(lookupError,previous){
     if(lookupError){abort(lookupError);return;}
     const current=getShortcut(id),currentGate=gate(shortcut.channelId);
-    if(!validUser(user) || !current || current.template!==shortcut.template || current.channelId!==shortcut.channelId || !!current.replaceLast!==!!shortcut.replaceLast || !currentGate.ok || (!currentGate.bypass && proof.slowSeconds!==currentGate.slowSeconds) || currentGate.nativeMs>0 || account(user).blockedUntil>now()){
+    if(!validUser(user) || !current || current.template!==shortcut.template || current.channelId!==shortcut.channelId || !currentGate.ok || (!currentGate.bypass && proof.slowSeconds!==currentGate.slowSeconds) || currentGate.nativeMs>0 || account(user).blockedUntil>now()){
      abort(Error('Availability changed; nothing was sent'));return;
     }
     let nonce;
     try{nonce=String(port.createNonce());if(!isId(nonce))throw Error('Native message nonce unavailable');
-     commit(user,next=>{next.pending={status:'sending',shortcutId:id,channelId:shortcut.channelId,content:shortcut.template,replaceLast:!!shortcut.replaceLast,previous:previous || null,startedAt:now(),nonce};});
+     commit(user,next=>{next.pending={status:'sending',shortcutId:id,channelId:shortcut.channelId,content:shortcut.template,replaceLast,previous:previous || null,startedAt:now(),nonce};});
     }catch(error){if(account(user).pending?.status==='checking')try{commit(user,next=>{next.pending=null;});}catch(_){}callback(error || Error('Could not save send intent'));return;}
     const timer=setTimer(()=>{timers.delete(timer);pendingTimers.delete(key(user,nonce));const p=account(user).pending;if(p?.nonce===nonce && p.status==='sending'){try{commit(user,next=>{next.pending.status='uncertain';next.pending.note='No server confirmation. Open the channel before clearing this attempt.';});}catch(_){port.notify?.('Could not save send status; the previous attempt remains locked until restart and review.');}}},30000);timers.add(timer);pendingTimers.set(key(user,nonce),timer);
     try{const result=port.sendNative(shortcut.channelId,shortcut.template,nonce);if(result && typeof result.then==='function')result.then(()=>{},error=>onFailure({channelId:shortcut.channelId,messageId:nonce,error}));callback(null,{started:true});}
     catch(error){onFailure({channelId:shortcut.channelId,messageId:nonce,error});callback(error || Error('Native send failed'));}
    }
-   if(shortcut.replaceLast)findPrevious(user,shortcut.channelId,dispatch);else dispatch(null,null);
+   if(replaceLast)findPrevious(user,shortcut.channelId,dispatch);else dispatch(null,null);
   });
  }
  function cancelPendingTimer(user,p){const timer=pendingTimers.get(key(user,p.nonce));if(timer!=null){clearTimer(timer);timers.delete(timer);pendingTimers.delete(key(user,p.nonce));}}
@@ -284,13 +284,13 @@ function Dashboard(){
  React.useEffect(()=>{const generation=++checks.current;let index=0;function next(){if(generation!==checks.current || !enabled || !foreground || !focused || index>=visible.length)return;const item=visible[index++];controller.verify(item.channelId,()=>next());}next();return()=>{checks.current++;};},[visibleKey,userId,focused,foreground,refreshToken]);
  function edit(item){setNotice('');setForm(item?{...item}:{id:null,label:'',channelId:selected?.getChannelId() || '',template:list[list.length-1]?.template || ''});}
  function editAll(){setNotice('');setForm({mode:'all',userId,template:list.length && list.every(item=>item.template===list[0].template)?list[0].template:''});}
- function send(item,repeatApproved=false){safe(()=>controller.press(item.id,{repeatApproved},(error,result)=>{
+ function send(item,replaceLast=false,repeatApproved=false){safe(()=>controller.press(item.id,{replaceLast,repeatApproved},(error,result)=>{
   if(error){setNotice(error.message || String(error));return;}
-  if(result?.needsRepeatConfirmation){RN.Alert.alert('Send this template again?',describe(item.channelId).title+'\n\nThe same template was confirmed here less than 10 minutes ago.',[{text:'Cancel',style:'cancel'},{text:'Send again',onPress:()=>send(item,true)}]);return;}
+  if(result?.needsRepeatConfirmation){RN.Alert.alert(replaceLast?'Send and replace again?':'Send this template again?',describe(item.channelId).title+'\n\nThe same template was confirmed here less than 10 minutes ago.',[{text:'Cancel',style:'cancel'},{text:'Send again',onPress:()=>send(item,replaceLast,true)}]);return;}
   if(result?.started)setNotice('');
  }));}
  function review(){const p=controller.pending();if(!p)return;RN.Alert.alert('Review the previous send',p.note || 'No confirmed result yet.',[{text:'Keep locked',style:'cancel'},{text:'Open channel',onPress:()=>safe(()=>openChannel(p.channelId))},{text:'I checked — clear lock',style:'destructive',onPress:()=>safe(()=>{controller.clearPending();setNotice('Lock cleared. Nothing was resent.');})}]);}
- const children=[h(RN.View,{key:'header',style:{marginBottom:20}},text('Posting Shortcuts',{fontSize:27,lineHeight:34,fontWeight:'700'}),text(user?'Sending as '+(user.globalName || user.username || userId):'Sign in to Discord',{color:color.muted,marginTop:5}),text('One tap sends one template to its saved channel.',{fontSize:13,color:color.muted,marginTop:10}),h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button('Add shortcut',()=>edit(null),!enabled,'primary'),button('Change all templates',editAll,!enabled || !list.length || !!controller?.pending()),button('Refresh status',()=>{checks.current++;controller?.invalidate();setRefreshToken(x=>x+1);},!enabled))),
+ const children=[h(RN.View,{key:'header',style:{marginBottom:20}},text('Posting Shortcuts',{fontSize:27,lineHeight:34,fontWeight:'700'}),text(user?'Sending as '+(user.globalName || user.username || userId):'Sign in to Discord',{color:color.muted,marginTop:5}),text('Send & replace also deletes your previous message after the new one is confirmed.',{fontSize:13,color:color.muted,marginTop:10}),h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button('Add shortcut',()=>edit(null),!enabled,'primary'),button('Change all templates',editAll,!enabled || !list.length || !!controller?.pending()),button('Refresh status',()=>{checks.current++;controller?.invalidate();setRefreshToken(x=>x+1);},!enabled))),
   notice?text(notice,{color:color.accent,marginBottom:14}):null];
  const pending=controller?.pending();if(pending)children.push(h(RN.View,{key:'pending',style:{backgroundColor:'#342c24',padding:15,borderRadius:14,marginBottom:16}},text(pending.status==='checking'?'Checking before sending…':pending.status==='sending'?'Sending — waiting for confirmation':pending.status==='deleting'?'New message sent — deleting previous message':'Previous attempt needs review',{fontWeight:'600'}),text(describe(pending.channelId).title,{color:color.muted,fontSize:13}),button('Review attempt',review,pending.status!=='uncertain')));
  if(form?.mode==='all'){
@@ -308,8 +308,6 @@ function Dashboard(){
    destination?text(destination.title,{fontSize:13,color:color.accent,marginTop:10}):null,
    field('MESSAGE TEMPLATE',form.template,value=>setForm({...form,template:value}),{multiline:true,maxLength:2000,textAlignVertical:'top',style:{backgroundColor:color.input,borderWidth:1,borderColor:color.line,borderRadius:10,color:color.text,fontSize:15,padding:12,minHeight:130}}),
    text(form.template.length+'/2000 · Mentions will not ping',{fontSize:12,color:color.muted,marginTop:6}),
-   h(RN.View,{style:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginTop:16}},text('Replace my last message',{fontWeight:'600'}),h(RN.Switch,{value:!!form.replaceLast,onValueChange:value=>setForm({...form,replaceLast:value}),disabled:!enabled,accessibilityLabel:'Replace my last message',trackColor:{false:color.line,true:'#7062cf'}})),
-   text('After the new message is confirmed, delete your latest previous message in this channel, including one sent manually.',{fontSize:12,lineHeight:18,color:color.muted,marginTop:4}),
    h(RN.View,{style:{flexDirection:'row'}},button('Save shortcut',()=>safe(()=>{controller.save(form);setForm(null);setNotice('Shortcut saved on this phone.');RN.Keyboard?.dismiss();}),!enabled,'primary'),button('Cancel',()=>setForm(null)))));
  }
  children.push(field('FIND A SHORTCUT',search,value=>{setSearch(value);setPage(0);},{placeholder:'Server, channel, or shortcut name'}));
@@ -319,13 +317,12 @@ function Dashboard(){
    text(item.label,{fontWeight:'700',fontSize:18}),text(destination.title,{fontSize:13,color:color.accent,marginTop:3}),text(item.template,{color:'#d6d8e1',marginTop:12}),
    text(status.kind==='cooldown'?status.reason+' · '+duration(status.until-Date.now())+' left':status.label,{color:ready?color.green:color.muted,fontWeight:'600',marginTop:13}),
    text('Last template: '+dateLabel(history.lastTemplateAt),{fontSize:12,lineHeight:18,color:color.muted,marginTop:5}),
-   item.replaceLast?text('Replace my last message · On',{fontSize:12,color:color.accent,marginTop:5}):null,
    history.replacement?text(history.replacement.note,{fontSize:12,lineHeight:18,color:history.replacement.status==='failed'?color.red:color.muted,marginTop:5}):null,
-   h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button(status.kind==='unknown'?(item.replaceLast?'Check & replace':'Check & send'):(item.replaceLast?'Send & replace':'Send template'),()=>send(item),!enabled || !['ready','unknown'].includes(status.kind),'primary'),button('Open',()=>safe(()=>openChannel(item.channelId))),button('Edit',()=>edit(item),!!pending),button('Remove',()=>safe(()=>{controller.remove(item.id);setNotice('Shortcut removed.');}),!!pending))));
+   h(RN.View,{style:{flexDirection:'row',flexWrap:'wrap'}},button(status.kind==='unknown'?'Check & send':'Send template',()=>send(item),!enabled || !['ready','unknown'].includes(status.kind),'primary'),button('Send & replace',()=>send(item,true),!enabled || !['ready','unknown'].includes(status.kind)),button('Open',()=>safe(()=>openChannel(item.channelId))),button('Edit',()=>edit(item),!!pending),button('Remove',()=>safe(()=>{controller.remove(item.id);setNotice('Shortcut removed.');}),!!pending))));
  });
  if(!list.length)children.push(text('Save a channel and a template to get started. You can also open this dashboard with /postingshortcuts.',{color:color.muted,marginTop:20}));
  if(filtered.length>6)children.push(h(RN.View,{key:'pages',style:{flexDirection:'row',alignItems:'center',marginTop:16}},button('Previous',()=>setPage(page-1),page===0),text((page+1)+' / '+Math.ceil(filtered.length/6)),button('Next',()=>setPage(page+1),(page+1)*6>=filtered.length)));
- children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.3',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
+ children.push(text('Saved locally for this account. No scheduled sends or automatic repeats.\nPosting Shortcuts 0.1.4',{fontSize:12,lineHeight:18,color:'#838a9c',marginTop:25,marginBottom:30}));
  return h(RN.ScrollView,{style:{backgroundColor:color.bg,flex:1},contentContainerStyle:{padding:18,paddingBottom:30},keyboardShouldPersistTaps:'handled'},...children);
 }
 return {

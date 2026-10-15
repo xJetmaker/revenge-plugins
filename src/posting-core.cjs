@@ -37,7 +37,7 @@ function createPostingController(port){
   if(!input.id && a.shortcuts.length>=50)throw Error('This version supports 50 shortcuts per account');
   if(a.shortcuts.some(s=>s.channelId===channelId && s.id!==input.id))throw Error('A shortcut for this channel already exists; edit that shortcut');
   if(input.id && !a.shortcuts.some(s=>s.id===input.id))throw Error('Shortcut no longer exists');
-  const item={id:input.id || 'shortcut-'+now()+'-'+(++serial),channelId,label,template,replaceLast:!!input.replaceLast};
+  const item={id:input.id || 'shortcut-'+now()+'-'+(++serial),channelId,label,template};
   commit(user,next=>{const index=next.shortcuts.findIndex(s=>s.id===item.id);index<0?next.shortcuts.push(item):next.shortcuts.splice(index,1,item);});return item;
  }
  function replaceTemplates(value,expectedUser=uid()){
@@ -114,14 +114,14 @@ function createPostingController(port){
   page();
  }
  function press(id,options={},callback=()=>{}){
-  const user=uid(),shortcut=getShortcut(id);if(!shortcut){callback(Error('Shortcut no longer exists'));return;}
+  const user=uid(),shortcut=getShortcut(id),replaceLast=options.replaceLast===true;if(!shortcut){callback(Error('Shortcut no longer exists'));return;}
   const a=account(user),g=gate(shortcut.channelId);if(!g.ok){callback(Error(g.reason));return;}
   if(a.pending){callback(Error('Review or wait for the previous send first'));return;}
   if(a.blockedUntil>now()){callback(Error('Discord rate limit: wait before sending'));return;}
-  if(shortcut.replaceLast && (typeof port.deleteNative!=='function' || port.canReplace?.(shortcut.channelId)===false)){callback(Error('Replacement needs Discord’s delete action and access to message history'));return;}
+  if(replaceLast && (typeof port.deleteNative!=='function' || port.canReplace?.(shortcut.channelId)===false)){callback(Error('Replacement needs Discord’s delete action and access to message history'));return;}
   const old=a.history[shortcut.channelId];
   if(!options.repeatApproved && old?.lastTemplate===shortcut.template && now()-old.lastTemplateAt<600000){callback(null,{needsRepeatConfirmation:true});return;}
-  commit(user,next=>{next.pending={status:'checking',shortcutId:id,channelId:shortcut.channelId,content:shortcut.template,replaceLast:!!shortcut.replaceLast,startedAt:now(),nonce:null};});
+  commit(user,next=>{next.pending={status:'checking',shortcutId:id,channelId:shortcut.channelId,content:shortcut.template,replaceLast,startedAt:now(),nonce:null};});
   function abort(error){if(account(user).pending?.status==='checking')commit(user,next=>{next.pending=null;});callback(error);}
   verify(shortcut.channelId,(error,proof)=>{
    if(!validUser(user)){abort(Error('Account or app changed'));return;}
@@ -129,18 +129,18 @@ function createPostingController(port){
    function dispatch(lookupError,previous){
     if(lookupError){abort(lookupError);return;}
     const current=getShortcut(id),currentGate=gate(shortcut.channelId);
-    if(!validUser(user) || !current || current.template!==shortcut.template || current.channelId!==shortcut.channelId || !!current.replaceLast!==!!shortcut.replaceLast || !currentGate.ok || (!currentGate.bypass && proof.slowSeconds!==currentGate.slowSeconds) || currentGate.nativeMs>0 || account(user).blockedUntil>now()){
+    if(!validUser(user) || !current || current.template!==shortcut.template || current.channelId!==shortcut.channelId || !currentGate.ok || (!currentGate.bypass && proof.slowSeconds!==currentGate.slowSeconds) || currentGate.nativeMs>0 || account(user).blockedUntil>now()){
      abort(Error('Availability changed; nothing was sent'));return;
     }
     let nonce;
     try{nonce=String(port.createNonce());if(!isId(nonce))throw Error('Native message nonce unavailable');
-     commit(user,next=>{next.pending={status:'sending',shortcutId:id,channelId:shortcut.channelId,content:shortcut.template,replaceLast:!!shortcut.replaceLast,previous:previous || null,startedAt:now(),nonce};});
+     commit(user,next=>{next.pending={status:'sending',shortcutId:id,channelId:shortcut.channelId,content:shortcut.template,replaceLast,previous:previous || null,startedAt:now(),nonce};});
     }catch(error){if(account(user).pending?.status==='checking')try{commit(user,next=>{next.pending=null;});}catch(_){}callback(error || Error('Could not save send intent'));return;}
     const timer=setTimer(()=>{timers.delete(timer);pendingTimers.delete(key(user,nonce));const p=account(user).pending;if(p?.nonce===nonce && p.status==='sending'){try{commit(user,next=>{next.pending.status='uncertain';next.pending.note='No server confirmation. Open the channel before clearing this attempt.';});}catch(_){port.notify?.('Could not save send status; the previous attempt remains locked until restart and review.');}}},30000);timers.add(timer);pendingTimers.set(key(user,nonce),timer);
     try{const result=port.sendNative(shortcut.channelId,shortcut.template,nonce);if(result && typeof result.then==='function')result.then(()=>{},error=>onFailure({channelId:shortcut.channelId,messageId:nonce,error}));callback(null,{started:true});}
     catch(error){onFailure({channelId:shortcut.channelId,messageId:nonce,error});callback(error || Error('Native send failed'));}
    }
-   if(shortcut.replaceLast)findPrevious(user,shortcut.channelId,dispatch);else dispatch(null,null);
+   if(replaceLast)findPrevious(user,shortcut.channelId,dispatch);else dispatch(null,null);
   });
  }
  function cancelPendingTimer(user,p){const timer=pendingTimers.get(key(user,p.nonce));if(timer!=null){clearTimer(timer);timers.delete(timer);pendingTimers.delete(key(user,p.nonce));}}
