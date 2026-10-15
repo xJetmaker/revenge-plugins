@@ -1,0 +1,29 @@
+var NativeDate=Date,console={log:print,error:print};
+var assert={equal:function(a,b){if(a!==b)throw Error('Expected '+b+', got '+a);},deepEqual:function(a,b){if(JSON.stringify(a)!==JSON.stringify(b))throw Error('Values differ');}};
+var fs={readFileSync:function(){return __POSTING_BUNDLE__;}},require={resolve:function(path){return path;}};
+var vm={runInNewContext:function(code,context){for(var key of Object.keys(context))globalThis[key]=context[key];return (0,eval)(code);}};
+function fixture(){
+ let now=Date.parse('2026-10-15T12:00:00Z'),user='1',online=true,slowSeconds=0,nativeMs=0,allow=true,seq=0,nonce=0;const storage={},handlers={},sends=[],reads=[],timers=new Map(),alerts=[],toasts=[],navigation=[];let command=null;
+ const hooks=[];let cursor=0,effects=[];
+ const React={createElement:(type,props,...children)=>({type,props:{...props,children}}),useRef(value){const i=cursor++;if(!hooks[i])hooks[i]={current:value};return hooks[i];},useState(value){const i=cursor++;if(!(i in hooks))hooks[i]=value;return[hooks[i],next=>hooks[i]=typeof next==='function'?next(hooks[i]):next];},useEffect(fn,deps){const i=cursor++,old=hooks[i];if(!old || deps.some((value,n)=>value!==old.deps[n])){old?.cleanup?.();const record=hooks[i]={deps};effects.push(()=>record.cleanup=fn());}}};
+ const RN={View:'View',Text:'Text',TextInput:'TextInput',Pressable:'Pressable',ScrollView:'ScrollView',Keyboard:{dismiss(){}},Alert:{alert:(...args)=>alerts.push(args)},AppState:{currentState:'active',addEventListener:(type,fn)=>{handlers.appState=fn;return{remove:()=>delete handlers.appState};}}};
+ const channel={id:'10',guild_id:'20',name:'dm-requests',type:0,get rateLimitPerUser(){return slowSeconds;}};
+ const modules={getCurrentUser:{getCurrentUser:()=>({id:user,username:'Tester'})},getChannel:{getChannel:id=>id==='10'?channel:null,getDMFromUserId(){}},getGuild:{getGuild:()=>({id:'20',name:'Test server'}),getGuilds(){}},can:{can:()=>allow,computePermissions(){}},isConnected:{isConnected:()=>online,isTryingToConnect(){}},getSlowmodeCooldownGuess:{getSlowmodeCooldownGuess:()=>nativeMs,isChannelOnCooldown:()=>nativeMs>0},canBypassSlowmode:{canBypassSlowmode:()=>false,getSlowmodeDescription(){}},sendMessage:{sendMessage(...args){assert.equal(storage.data.accounts[user].pending.status,'sending');sends.push(args);},receiveMessage(){}},createNonce:{createNonce:()=>String(now)+String(++nonce)},getChannelId:{getChannelId:()=> '10',getVoiceChannelId(){}},getRootNavigationRef:{getRootNavigationRef:()=>({navigate:(...args)=>navigation.push(args)})}};
+ const http={get(path,cb){reads.push({path,cb});return{then(fn){fn(undefined);}};}};modules.HTTP={HTTP:http,getAPIBaseURL(){},setRequestPatch(){},get:http.get};
+ const dispatcher={subscribe:(type,fn)=>handlers[type]=fn,unsubscribe:type=>delete handlers[type]};
+ const vendetta={plugin:{storage},metro:{common:{React,ReactNative:RN,FluxDispatcher:dispatcher,constants:{Permissions:{VIEW_CHANNEL:1,SEND_MESSAGES:2,SEND_MESSAGES_IN_THREADS:3}},NavigationNative:{useIsFocused:()=>true}},findByProps:key=>modules[key] || null},commands:{registerCommand(c){command=c;return()=>command=null;}},ui:{toasts:{showToast:message=>toasts.push(message)}}};
+ const plugin=vm.runInNewContext('(vendetta=>'+fs.readFileSync(require.resolve('../docs/posting-shortcuts/index.js'),'utf8')+')(vendetta)',{vendetta,console,Date:Object.assign(function(value){return arguments.length?new NativeDate(value):new NativeDate();},{now:function(){return now;},parse:NativeDate.parse}),setTimeout:(fn,ms)=>{timers.set(++seq,{fn,ms,interval:false});return seq;},clearTimeout:id=>timers.delete(id),setInterval:(fn,ms)=>{timers.set(++seq,{fn,ms,interval:true});return seq;},clearInterval:id=>timers.delete(id)});
+ function render(){cursor=0;effects=[];const tree=plugin.settings();for(const effect of effects)effect();return tree;}
+ function nodes(tree,predicate){const found=[];function walk(node){if(!node || typeof node!=='object')return;if(predicate(node))found.push(node);for(const child of node.props?.children || [])walk(child);}walk(tree);return found;}
+ const button=(tree,label)=>nodes(tree,n=>n.type==='Pressable' && n.props.accessibilityLabel===label)[0];
+ function add(){let tree=render();button(tree,'Add shortcut').props.onPress();tree=render();nodes(tree,n=>n.type==='TextInput' && n.props.placeholder==='My DM request channel')[0].props.onChangeText('My shortcut');tree=render();nodes(tree,n=>n.type==='TextInput' && n.props.multiline)[0].props.onChangeText('Hello everyone');tree=render();button(tree,'Save shortcut').props.onPress();return render();}
+ function cleanup(){for(const entry of hooks)entry?.cleanup?.();plugin.onUnload();}
+ return{plugin,storage,handlers,sends,reads,timers,alerts,toasts,navigation,render,nodes,button,add,cleanup,get command(){return command;},set online(v){online=v;},set slow(v){slowSeconds=v;},set nativeMs(v){nativeMs=v;},set allow(v){allow=v;},set user(v){user=v;},get now(){return now;},confirm(){const [channel,payload,,options]=sends.at(-1);handlers.MESSAGE_CREATE({message:{id:'9000',nonce:options.nonce,channel_id:channel,content:payload.content,timestamp:new Date(now).toISOString(),author:{id:user},type:0}});}};
+}
+
+Promise=function(){throw Error('No plugin Promise constructor allowed');};
+var f=fixture();f.plugin.onLoad();assert.equal(f.command.execute(),undefined);assert.equal(f.sends.length,0);
+var tree=f.add();f.button(tree,'Send template').props.onPress();assert.equal(f.sends.length,1);assert.equal(f.storage.data.accounts['1'].pending.status,'sending');
+f.confirm();assert.equal(f.storage.data.accounts['1'].history['10'].lastTemplateAt,f.now);assert.equal(f.storage.data.accounts['1'].pending,null);
+f.cleanup();assert.equal(f.timers.size,0);
+print('HERMES PASS: dashboard save, local command, one native send, confirmed history, cleanup');
